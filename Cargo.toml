@@ -1,0 +1,32 @@
+[workspace]
+members = [".", "tools/otto-render"]
+
+[package]
+name = "ottobot"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "otto"
+path = "src/main.rs"
+
+[dependencies]
+ansi-to-tui = "7"
+anyhow = "1"
+blake3 = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+croner = "2"
+crossterm = "0.28"
+dirs = "5"
+humantime = "2"
+humantime-serde = "1"
+ratatui = "0.29"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = "0.3"
+walkdir = "2"
