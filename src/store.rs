@@ -16,6 +16,11 @@ pub struct SkillState {
     pub last_fired_at: Option<DateTime<Local>>,
     pub last_fired_key: Option<String>,
     pub last_run_id: Option<String>,
+    /// Event triggers: when the checker last ran, and consecutive script failures.
+    #[serde(default)]
+    pub last_checked_at: Option<DateTime<Local>>,
+    #[serde(default)]
+    pub checker_failures: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

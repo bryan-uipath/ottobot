@@ -65,8 +65,11 @@ before writing to disk if anything in step 1 was a judgment call.
 
 ```
 otto --list                      # skill appears with a valid trigger
+otto --check <name>              # event only: compile the checker, print the verdict
 otto --run <name>                # one headless run, events to stdout
 ```
 
-Report the result of `--list`. Only run `--run` if the user asks; it costs
-real tokens and may act on real systems.
+Report the result of `--list`. For event triggers also run `--check` and show
+the compiled script path and verdict; the event prose should name concrete,
+scriptable facts (a workflow URL, a label, a Jira JQL). Only run `--run` if
+the user asks; it costs real tokens and may act on real systems.

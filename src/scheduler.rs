@@ -1,5 +1,6 @@
 //! Tick loop: rediscover skills, evaluate triggers, dedupe, spawn runs.
 
+use crate::checker::{Checker, Outcome};
 use crate::run::{Run, RunEvent, RunMeta, RunStatus};
 use crate::runner::{self, Invocation};
 use crate::skill::{self, Skill};
@@ -8,6 +9,7 @@ use crate::store::{SkillState, Store};
 use crate::trigger::Trigger;
 use anyhow::Result;
 use chrono::{DateTime, Local};
+use std::collections::HashSet;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -25,11 +27,16 @@ pub struct Scheduler {
     pub default_runner: String,
     /// Cron occurrences are evaluated strictly after this; advanced each tick.
     last_eval: DateTime<Local>,
+    /// Event checks in flight, and the channel their verdicts come back on.
+    checking: HashSet<String>,
+    check_tx: mpsc::UnboundedSender<(String, Result<Outcome, String>)>,
+    check_rx: mpsc::UnboundedReceiver<(String, Result<Outcome, String>)>,
 }
 
 impl Scheduler {
     pub fn new(shared: Shared, store: Store, tick: Duration, default_runner: String) -> Self {
-        Self { shared, store, tick, default_runner, last_eval: Local::now() }
+        let (check_tx, check_rx) = mpsc::unbounded_channel();
+        Self { shared, store, tick, default_runner, last_eval: Local::now(), checking: HashSet::new(), check_tx, check_rx }
     }
 
     pub async fn run(mut self, mut cmds: mpsc::Receiver<Command>) {
@@ -38,9 +45,10 @@ impl Scheduler {
         loop {
             tokio::select! {
                 _ = interval.tick() => self.tick_once(),
+                Some((name, out)) = self.check_rx.recv() => self.on_check(&name, out),
                 Some(cmd) = cmds.recv() => match cmd {
                     Command::Reload => self.reload(),
-                    Command::RunNow(name) => self.fire(&name, "manual"),
+                    Command::RunNow(name) => self.fire(&name, "manual", None),
                 },
             }
         }
@@ -64,12 +72,16 @@ impl Scheduler {
                 }
                 entry.hash = s.hash.clone();
                 let trigger = Trigger::from_spec(&s.front.trigger).map_err(|e| format!("{e:#}"));
-                let next_fire = trigger.as_ref().ok().and_then(|t| t.next_after(now));
+                // Event: next_fire is the next check, not a known fire time.
+                let next_fire = match &trigger {
+                    Ok(Trigger::Event { check_every, .. }) => Some(next_check(entry.last_checked_at, *check_every, now)),
+                    Ok(t) => t.next_after(now),
+                    Err(_) => None,
+                };
                 SkillView {
                     last_fired: entry.last_fired_at,
                     active_run: None,
                     note: match &trigger {
-                        Ok(Trigger::Event { .. }) => "event triggers not yet evaluated".into(),
                         Ok(_) => String::new(),
                         Err(e) => format!("invalid: {e}"),
                     },
@@ -81,12 +93,15 @@ impl Scheduler {
             .collect();
         let _ = self.store.save_state(&st);
         let mut sh = self.shared.lock().unwrap();
-        // Preserve active-run markers across reloads.
-        let active: Vec<(String, Option<String>)> = sh.skills.iter().map(|v| (v.skill.name.clone(), v.active_run.clone())).collect();
+        // Preserve active-run markers and last decision notes across reloads.
+        let prev: Vec<(String, Option<String>, String)> = sh.skills.iter().map(|v| (v.skill.name.clone(), v.active_run.clone(), v.note.clone())).collect();
         let mut views = views;
         for v in &mut views {
-            if let Some((_, a)) = active.iter().find(|(n, _)| *n == v.skill.name) {
+            if let Some((_, a, n)) = prev.iter().find(|(n, _, _)| *n == v.skill.name) {
                 v.active_run = a.clone();
+                if v.note.is_empty() {
+                    v.note = n.clone();
+                }
             }
         }
         sh.log(format!("loaded {} skill(s), {} error(s)", views.len(), errors.len()));
@@ -114,12 +129,84 @@ impl Scheduler {
         };
         self.last_eval = now;
         for (name, key) in due {
-            self.fire(&name, &key);
+            self.fire(&name, &key, None);
+        }
+        self.start_checks(now);
+    }
+
+    /// Spawn a checker for each event skill whose poll interval has elapsed.
+    fn start_checks(&mut self, now: DateTime<Local>) {
+        let mut st = self.store.load_state();
+        let root = self.shared.lock().unwrap().root.clone();
+        let mut sh = self.shared.lock().unwrap();
+        for v in sh.skills.iter_mut() {
+            let Ok(Trigger::Event { description, check_every }) = &v.trigger else { continue };
+            let name = v.skill.name.clone();
+            if self.checking.contains(&name) || v.active_run.is_some() {
+                continue;
+            }
+            let entry = st.skills.entry(name.clone()).or_default();
+            if next_check(entry.last_checked_at, *check_every, now) > now {
+                continue;
+            }
+            entry.last_checked_at = Some(now);
+            v.next_fire = Some(now + chrono::Duration::from_std(*check_every).unwrap_or_default());
+            v.note = "checking…".into();
+            self.checking.insert(name.clone());
+            let checker = Checker {
+                skill: v.skill.clone(),
+                description: description.clone(),
+                dir: self.store.dir.join("checkers"),
+                cwd: root.clone(),
+                runner: v.skill.front.runner.clone().unwrap_or_else(|| self.default_runner.clone()),
+            };
+            let failures = entry.checker_failures;
+            let tx = self.check_tx.clone();
+            tokio::spawn(async move {
+                let out = checker.check(failures).await.map_err(|e| format!("{e:#}"));
+                let _ = tx.send((name, out));
+            });
+        }
+        drop(sh);
+        let _ = self.store.save_state(&st);
+    }
+
+    /// Checker verdict: record, annotate the skill, fire if the condition holds.
+    fn on_check(&mut self, name: &str, out: Result<Outcome, String>) {
+        self.checking.remove(name);
+        let mut st = self.store.load_state();
+        let entry = st.skills.entry(name.to_string()).or_default();
+        let (note, fire) = match &out {
+            Ok(o) => {
+                match &o.script_failed {
+                    Some(_) => entry.checker_failures += 1,
+                    None => entry.checker_failures = 0,
+                }
+                let mode = format!("{:?}", o.mode).to_lowercase();
+                if o.result.fired {
+                    (format!("fired ({mode}) · {}", o.result.summary), Some((o.result.key.clone(), o.result.summary.clone())))
+                } else {
+                    (format!("not fired ({mode}) · {}", o.result.summary), None)
+                }
+            }
+            Err(e) => (format!("check failed: {e}"), None),
+        };
+        let _ = self.store.save_state(&st);
+        {
+            let mut sh = self.shared.lock().unwrap();
+            sh.log(format!("{name}: {note}"));
+            if let Some(v) = sh.skills.iter_mut().find(|v| v.skill.name == name) {
+                v.note = note;
+            }
+        }
+        if let Some((key, summary)) = fire {
+            let key = if key.is_empty() { Local::now().format("%Y-%m-%dT%H:%M").to_string() } else { key };
+            self.fire(name, &key, Some(&summary));
         }
     }
 
-    /// Dedupe gate then spawn. `key` identifies the trigger occurrence.
-    fn fire(&mut self, name: &str, key: &str) {
+    /// Dedupe gate then spawn. `key` identifies the trigger occurrence; `context` is the checker summary.
+    fn fire(&mut self, name: &str, key: &str, context: Option<&str>) {
         let mut st = self.store.load_state();
         let (skill, trigger, active) = {
             let sh = self.shared.lock().unwrap();
@@ -155,17 +242,17 @@ impl Scheduler {
         entry.last_fired_key = Some(key.to_string());
         entry.last_run_id = Some(id.clone());
         let _ = self.store.save_state(&st);
-        if let Err(e) = self.spawn(skill, id.clone(), key) {
+        if let Err(e) = self.spawn(skill, id.clone(), key, context) {
             self.shared.lock().unwrap().log(format!("{name}: failed to start: {e:#}"));
         }
     }
 
-    fn spawn(&self, skill: Skill, id: String, key: &str) -> Result<()> {
+    fn spawn(&self, skill: Skill, id: String, key: &str, context: Option<&str>) -> Result<()> {
         let runner_name = skill.front.runner.clone().unwrap_or_else(|| self.default_runner.clone());
         let runner = runner::by_name(&runner_name)?;
         let root = self.shared.lock().unwrap().root.clone();
         let inv = Invocation {
-            prompt: build_prompt(&skill, key),
+            prompt: build_prompt(&skill, key, context),
             cwd: root,
             model: skill.front.model.clone(),
             permission_mode: skill.front.permission_mode.clone(),
@@ -216,13 +303,21 @@ impl Scheduler {
 }
 
 /// Skill body plus an unattended-run preamble with trigger context.
-fn build_prompt(skill: &Skill, key: &str) -> String {
+fn build_prompt(skill: &Skill, key: &str, context: Option<&str>) -> String {
+    let ctx = context.map(|c| format!("\nTrigger context: {c}")).unwrap_or_default();
     format!(
-        "You are running unattended as an ottobot job for skill `{}` (trigger: {}). \
+        "You are running unattended as an ottobot job for skill `{}` (trigger: {}).{} \
          Do not ask questions; make reasonable decisions and finish. \
          Never push to a protected branch.\n\n{}",
-        skill.name, key, skill.body
+        skill.name, key, ctx, skill.body
     )
+}
+
+fn next_check(last: Option<DateTime<Local>>, every: Duration, now: DateTime<Local>) -> DateTime<Local> {
+    match last {
+        Some(t) => t + chrono::Duration::from_std(every).unwrap_or_default(),
+        None => now,
+    }
 }
 
 /// Stream the child's stdout/stderr into run events. Returns runner's ok flag.

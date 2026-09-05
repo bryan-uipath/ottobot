@@ -1,6 +1,7 @@
 //! ottobot: a scheduler that fires coding-agent runs from trigger-bearing skill files.
 
 mod caffeinate;
+mod checker;
 mod config;
 mod otto;
 mod run;
@@ -38,6 +39,9 @@ struct Cli {
     /// Run one skill headless (prints events), then exit. Bypasses dedupe/cooldown.
     #[arg(long, value_name = "SKILL")]
     run: Option<String>,
+    /// Evaluate one event trigger now (compiles the checker if needed), print the verdict, exit.
+    #[arg(long, value_name = "SKILL")]
+    check: Option<String>,
 }
 
 #[tokio::main]
@@ -69,6 +73,10 @@ async fn main() -> Result<()> {
             println!("{e:?}");
         }
         return Ok(());
+    }
+
+    if let Some(name) = &cli.check {
+        return check_once(&root, &store, &default_runner, name).await;
     }
 
     let mut app = state::AppState { root: root.clone(), store_dir: store.dir.clone(), ..Default::default() };
@@ -114,6 +122,23 @@ async fn headless(shared: state::Shared, tx: tokio::sync::mpsc::Sender<scheduler
             return Ok(());
         }
     }
+}
+
+/// Run a skill's event checker once and print the verdict.
+async fn check_once(root: &std::path::Path, store: &store::Store, runner: &str, name: &str) -> Result<()> {
+    let (skills, _) = skill::discover(root);
+    let Some(skill) = skills.into_iter().find(|s| s.name == name) else { anyhow::bail!("no skill {name}") };
+    let trigger::Trigger::Event { description, .. } = trigger::Trigger::from_spec(&skill.front.trigger)? else {
+        anyhow::bail!("{name} has a cron trigger, nothing to check")
+    };
+    let c = checker::Checker { skill, description, dir: store.dir.join("checkers"), cwd: root.to_path_buf(), runner: runner.to_string() };
+    let out = c.check(0).await?;
+    if let Some(e) = &out.script_failed {
+        eprintln!("[ottobot] script failed: {e}");
+    }
+    eprintln!("[ottobot] mode: {:?}, script: {}", out.mode, c.script_path().display());
+    println!("{}", serde_json::to_string(&out.result)?);
+    Ok(())
 }
 
 fn init_logging(dir: &std::path::Path) -> Result<()> {
