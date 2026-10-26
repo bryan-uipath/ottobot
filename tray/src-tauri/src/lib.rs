@@ -4,7 +4,6 @@ mod sock;
 
 use anyhow::{bail, Context, Result};
 use sock::{Conn, Request, Response, RunStatus, Snapshot};
-use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -20,8 +19,6 @@ struct Tray {
     conn: tokio::sync::Mutex<Option<Conn>>,
     /// Skill names in the `Run now` submenu.
     skills: Mutex<Vec<String>>,
-    /// Skills root of the last daemon seen; `Open TUI` passes it to `otto`.
-    root: Mutex<Option<PathBuf>>,
     /// When blur hid the popover; a tray click right after must not reopen it.
     hidden_at: Mutex<Option<Instant>>,
 }
@@ -52,14 +49,13 @@ impl Tray {
     }
 }
 
-/// Tooltip, root, and `Run now` submenu from a fresh snapshot.
+/// Tooltip and `Run now` submenu from a fresh snapshot.
 fn apply_snapshot(app: &AppHandle, st: &Snapshot) {
     let t = app.state::<Tray>();
     let since = chrono::Local::now() - chrono::Duration::hours(24);
     let failed = st.runs.iter().filter(|r| matches!(r.status, RunStatus::Failed(_)) && r.started_at >= since).count();
     let running = st.runs.iter().filter(|r| r.status == RunStatus::Running).count();
     tooltip(app, &format!("ottobot · {running} running · {failed} failed"));
-    *t.root.lock().unwrap() = Some(st.root.clone());
     let names: Vec<String> = st.skills.iter().map(|v| v.name.clone()).collect();
     if *t.skills.lock().unwrap() != names {
         if let (Ok(menu), Some(tray)) = (build_menu(app, &names), app.tray_by_id(TRAY)) {
@@ -92,7 +88,6 @@ fn build_menu(app: &AppHandle, skills: &[String]) -> tauri::Result<Menu<Wry>> {
     Menu::with_items(
         app,
         &[
-            &MenuItem::with_id(app, "open_tui", "Open TUI", true, None::<&str>)?,
             &Submenu::with_id_and_items(app, "run_now", "Run now", !skills.is_empty(), &refs)?,
             &MenuItem::with_id(app, "reload", "Reload skills", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
@@ -149,26 +144,6 @@ async fn run_now(t: State<'_, Tray>, skill: String) -> Result<(), String> {
     t.request(Request::RunNow { skill }).await.map(|_| ()).map_err(|e| format!("{e:#}"))
 }
 
-/// Terminal running `otto <root>`, via a `.command` file so no AppleScript quoting is needed.
-#[tauri::command]
-fn open_tui(app: AppHandle) -> Result<(), String> {
-    let _ = hide(&app);
-    let root = app.state::<Tray>().root.lock().unwrap().clone();
-    let cmd = match root {
-        Some(r) => format!("#!/bin/sh\nexec otto '{}'\n", r.display().to_string().replace('\'', r"'\''")),
-        None => "#!/bin/sh\nexec otto\n".into(),
-    };
-    let write = || -> std::io::Result<PathBuf> {
-        use std::os::unix::fs::PermissionsExt;
-        let path = dirs::home_dir().ok_or(std::io::ErrorKind::NotFound)?.join(".ottobot/open-tui.command");
-        std::fs::write(&path, cmd)?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
-        Ok(path)
-    };
-    let path = write().map_err(|e| e.to_string())?;
-    std::process::Command::new("open").args(["-a", "Terminal"]).arg(path).spawn().map(|_| ()).map_err(|e| e.to_string())
-}
-
 #[tauri::command]
 fn quit(app: AppHandle) {
     app.exit(0);
@@ -187,7 +162,6 @@ async fn poll(app: AppHandle) {
 /// Menu action, then an immediate snapshot; an error stays in the tooltip until the next poll.
 async fn menu_action(app: AppHandle, id: String) {
     let req = match id.as_str() {
-        "open_tui" => return drop(open_tui(app)),
         "quit" => return app.exit(0),
         "reload" => Request::Reload,
         id => match id.strip_prefix("run:") {
@@ -204,7 +178,7 @@ async fn menu_action(app: AppHandle, id: String) {
 pub fn run() {
     tauri::Builder::default()
         .manage(Tray::default())
-        .invoke_handler(tauri::generate_handler![snapshot, run_now, open_tui, quit])
+        .invoke_handler(tauri::generate_handler![snapshot, run_now, quit])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);

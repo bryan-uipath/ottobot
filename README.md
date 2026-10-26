@@ -145,7 +145,7 @@ Wire: newline-delimited JSON, one request → one response, connection reusable.
 
 `tray/` is a macOS menu-bar app (Tauri v2): tooltip with running/failed counts,
 a popover with the same NOW / ATTENTION / QUOTA / NEXT board, and Run now /
-Reload / Open TUI from its menu. It is a socket client only, so it needs the
+Reload from its menu. It is a socket client only, so it needs the
 daemon. Build: `cd tray/src-tauri && cargo tauri build`. See `tray/README.md`.
 
 ## Runners and usage

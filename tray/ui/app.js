@@ -131,7 +131,6 @@ async function refresh() {
   try { render(await invoke('snapshot')); } catch (e) { renderDown(e); }
 }
 
-$('tui').onclick = () => invoke('open_tui');
 $('quit').onclick = () => invoke('quit');
 listen('visible', (e) => { visible = e.payload; if (visible) refresh(); });
 setInterval(() => { if (visible) refresh(); }, 2000);
