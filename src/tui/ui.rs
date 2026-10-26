@@ -334,10 +334,14 @@ fn draw_board(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
         if ui.rail == Pane::Next && at == Some(i) {
             sel = Some(lines.len());
         }
-        let glyph = match (&v.active_run, &v.trigger) {
-            (Some(_), _) => spin_span(ui.frame),
-            (None, Err(_)) => Span::styled("✗ ", Style::default().fg(ORANGE)),
-            (None, Ok(_)) => Span::styled("○ ", dim()),
+        // Glyph = latest run outcome: running, invalid trigger, success, failure, never ran.
+        let latest = latest_run(st, v).map(|r| &r.status);
+        let glyph = match (&v.active_run, &v.trigger, latest) {
+            (Some(_), _, _) => spin_span(ui.frame),
+            (None, Err(_), _) => Span::styled("✗ ", Style::default().fg(ORANGE)),
+            (None, Ok(_), Some(RunStatus::Succeeded)) => Span::styled("● ", Style::default().fg(Color::Green)),
+            (None, Ok(_), Some(RunStatus::Failed(_))) => Span::styled("✗ ", Style::default().fg(ORANGE)),
+            _ => Span::styled("○ ", dim()),
         };
         let last = match (&v.active_run, v.last_fired) {
             (Some(_), _) => "running".to_string(),

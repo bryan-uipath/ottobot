@@ -88,6 +88,7 @@ body { font: 13px/1.4 var(--font-sans); color: var(--fg); padding: 10px; -webkit
 .spin { flex: none; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--brand-dim); border-top-color: var(--brand); animation: spin .9s linear infinite; }
 .dot { flex: none; width: 10px; text-align: center; color: var(--fg-light); }
 .x { flex: none; width: 10px; text-align: center; color: var(--err); }
+.ok { flex: none; width: 10px; text-align: center; color: var(--ok); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .quota .name { width: 76px; flex: none; color: var(--fg-de); }

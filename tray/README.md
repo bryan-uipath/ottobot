@@ -10,7 +10,7 @@ cargo tauri dev                                   # run from source
 ```
 
 - **Icon**: tooltip `ottobot · N running · M failed` (daemon `Status` every 15s).
-  Left-click toggles the popover; right-click: Run now ▸ skill, Reload skills, Quit.
+  Left-click toggles the popover; right-click: Run now ▸ skill, Reload skills, Open skills folder, Quit.
 - **Popover**: daemon pid + root, then NOW (running runs), ATTENTION (failures in 24h,
   skill parse errors), QUOTA (per runner window, `NN% left`), NEXT (skills by next fire,
   `run` per row). Polls `Snapshot` every 2s while open; hides on focus loss.

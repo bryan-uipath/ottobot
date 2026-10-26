@@ -19,6 +19,8 @@ struct Tray {
     conn: tokio::sync::Mutex<Option<Conn>>,
     /// Skill names in the `Run now` submenu.
     skills: Mutex<Vec<String>>,
+    /// Skills root of the last daemon seen; `Skills` opens it in Finder.
+    root: Mutex<Option<std::path::PathBuf>>,
     /// When blur hid the popover; a tray click right after must not reopen it.
     hidden_at: Mutex<Option<Instant>>,
 }
@@ -49,7 +51,7 @@ impl Tray {
     }
 }
 
-/// Tooltip and `Run now` submenu from a fresh snapshot.
+/// Tooltip, root, and `Run now` submenu from a fresh snapshot.
 fn apply_snapshot(app: &AppHandle, st: &Snapshot) {
     let t = app.state::<Tray>();
     let since = chrono::Local::now() - chrono::Duration::hours(24);
@@ -62,6 +64,7 @@ fn apply_snapshot(app: &AppHandle, st: &Snapshot) {
             let _ = tray.set_menu(Some(menu));
         }
         *t.skills.lock().unwrap() = names;
+        *t.root.lock().unwrap() = Some(st.root.clone());
     }
 }
 
@@ -90,6 +93,7 @@ fn build_menu(app: &AppHandle, skills: &[String]) -> tauri::Result<Menu<Wry>> {
         &[
             &Submenu::with_id_and_items(app, "run_now", "Run now", !skills.is_empty(), &refs)?,
             &MenuItem::with_id(app, "reload", "Reload skills", true, None::<&str>)?,
+            &MenuItem::with_id(app, "skills", "Open skills folder", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?,
         ],
@@ -144,6 +148,13 @@ async fn run_now(t: State<'_, Tray>, skill: String) -> Result<(), String> {
     t.request(Request::RunNow { skill }).await.map(|_| ()).map_err(|e| format!("{e:#}"))
 }
 
+/// Skills folder in Finder. Falls back to ~/.ottobot/skills when no daemon has been seen.
+#[tauri::command]
+fn open_skills(t: State<'_, Tray>) -> Result<(), String> {
+    let root = t.root.lock().unwrap().clone().or_else(|| dirs::home_dir().map(|h| h.join(".ottobot/skills"))).ok_or("no skills root")?;
+    std::process::Command::new("open").arg(root).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn quit(app: AppHandle) {
     app.exit(0);
@@ -163,6 +174,7 @@ async fn poll(app: AppHandle) {
 async fn menu_action(app: AppHandle, id: String) {
     let req = match id.as_str() {
         "quit" => return app.exit(0),
+        "skills" => return drop(open_skills(app.state::<Tray>())),
         "reload" => Request::Reload,
         id => match id.strip_prefix("run:") {
             Some(skill) => Request::RunNow { skill: skill.to_string() },
@@ -178,7 +190,7 @@ async fn menu_action(app: AppHandle, id: String) {
 pub fn run() {
     tauri::Builder::default()
         .manage(Tray::default())
-        .invoke_handler(tauri::generate_handler![snapshot, run_now, quit])
+        .invoke_handler(tauri::generate_handler![snapshot, run_now, open_skills, quit])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);

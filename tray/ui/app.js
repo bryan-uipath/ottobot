@@ -107,7 +107,13 @@ function render(st) {
     const t = v.next_fire && Date.parse(v.next_fire) - now;
     const when = v.next_fire ? check + (t < 0 ? 'now' : `in ${short(t)}`) : 'no schedule';
     const last = v.active_run ? 'running' : v.last_fired ? `last ${short(now - Date.parse(v.last_fired))} ago` : 'never ran';
-    const glyph = v.active_run ? el('span', 'spin') : v.trigger.Err ? el('span', 'x', '✗') : el('span', 'dot', '○');
+    // Glyph = latest run outcome.
+    const latestRun = st.runs.find(r => r.skill === v.name && r.status !== 'Running');
+    const glyph = v.active_run ? el('span', 'spin')
+      : v.trigger.Err ? el('span', 'x', '✗')
+      : latestRun?.status === 'Succeeded' ? el('span', 'ok', '●')
+      : latestRun?.status?.Failed !== undefined ? el('span', 'x', '✗')
+      : el('span', 'dot', '○');
     const btn = el('button', null, 'run');
     btn.disabled = !!v.active_run;
     btn.onclick = () => invoke('run_now', { skill: v.name }).then(refresh, refresh);
@@ -134,6 +140,7 @@ async function refresh() {
   try { render(await invoke('snapshot')); } catch (e) { renderDown(e); }
 }
 
+$('skills').onclick = () => invoke('open_skills');
 $('quit').onclick = () => invoke('quit');
 listen('visible', (e) => { visible = e.payload; if (visible) refresh(); });
 setInterval(() => { if (visible) refresh(); }, 2000);
