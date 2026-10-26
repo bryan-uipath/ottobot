@@ -35,6 +35,15 @@ function clock(ms) {
   return s >= 3600 ? `${Math.floor(s / 3600)}:${mm.padStart(2, '0')}:${ss}` : `${mm}:${ss}`;
 }
 
+// Run duration, e.g. `42s`, `1m02s`, `2h05m`, `1d3h` (TUI `rel_dur`).
+function dur(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000)), p = (n) => String(n).padStart(2, '0');
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m${p(s % 60)}s`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h${p(Math.floor((s % 3600) / 60))}m`;
+  return `${Math.floor(s / 86400)}d${Math.floor((s % 86400) / 3600)}h`;
+}
+
 const firstLine = (s) => (s || '').split('\n')[0];
 const basename = (p) => p.split('/').filter(Boolean).pop() || p;
 const row = (glyph, name, rest, ...extra) => el('div', 'row', null, glyph, el('span', 'name', name), el('span', 'rest', rest), ...extra);
@@ -56,22 +65,27 @@ function render(st) {
   // Parse errors first: they never clear on their own.
   out.push(el('div', 'label', 'attention'));
   const attn = [];
-  for (const v of st.skills) if (v.trigger.Err) attn.push([v.name, firstLine(v.trigger.Err), '']);
-  for (const [p, e] of st.skill_errors) attn.push([basename(p), firstLine(e), '']);
+  for (const v of st.skills) if (v.trigger.Err) attn.push([v.name, firstLine(v.trigger.Err), null]);
+  for (const [p, e] of st.skill_errors) attn.push([basename(p), firstLine(e), null]);
   const since = now - 24 * 3600e3;
   for (const r of st.runs) {
     if (!r.status.Failed || Date.parse(r.started_at) < since) continue;
-    attn.push([r.skill, firstLine(r.status.Failed), `${short(now - Date.parse(r.finished_at || r.started_at))} ago`]);
+    const end = r.finished_at ? Date.parse(r.finished_at) : now;
+    attn.push([r.skill, firstLine(r.status.Failed), `\u00a0· ${dur(end - Date.parse(r.started_at))}`]);
   }
   if (!attn.length) out.push(none());
-  for (const [name, why, ago] of attn) {
-    out.push(row(el('span', 'x', '✗'), name, ago));
-    if (why) out.push(el('div', 'sub', why));
+  // `<reason> · <duration>`: the reason truncates, the duration never does.
+  for (const [name, why, tail] of attn) {
+    out.push(el('div', 'row', null, el('span', 'x', '✗'), el('span', 'name', name),
+      el('span', 'rest split', null, el('span', 'why', why), tail ? el('span', null, tail) : '')));
   }
 
   out.push(el('div', 'label', 'quota'));
-  if (!st.runner_usage.length) out.push(none());
-  for (const [name, u] of st.runner_usage) {
+  if (!st.runner_health.length) out.push(none());
+  for (const [name, health] of st.runner_health) {
+    const u = st.runner_usage.find(([n]) => n === name)?.[1];
+    if (health.Err != null) { out.push(el('div', 'row', null, el('span', 'x', '✗'), el('span', 'name', name), el('span', 'rest err', firstLine(health.Err)))); continue; }
+    if (!u) { out.push(el('div', 'row quota', null, el('span', 'name', name), el('span', 'light', '…'))); continue; }
     if (u.Err != null) { out.push(el('div', 'row quota', null, el('span', 'name', name), el('span', 'light', 'unavailable'))); continue; }
     if (!u.Ok.length) { out.push(el('div', 'row quota', null, el('span', 'name', name), el('span', 'light', 'no usage data'))); continue; }
     for (const w of u.Ok) {
@@ -91,7 +105,7 @@ function render(st) {
   for (const v of next) {
     const check = v.trigger.Ok?.startsWith('event') ? 'check ' : '';
     const t = v.next_fire && Date.parse(v.next_fire) - now;
-    const when = v.next_fire ? (t < 0 ? 'now' : `${check}in ${short(t)}`) : 'no schedule';
+    const when = v.next_fire ? check + (t < 0 ? 'now' : `in ${short(t)}`) : 'no schedule';
     const last = v.active_run ? 'running' : v.last_fired ? `last ${short(now - Date.parse(v.last_fired))} ago` : 'never ran';
     const glyph = v.active_run ? el('span', 'spin') : v.trigger.Err ? el('span', 'x', '✗') : el('span', 'dot', '○');
     const btn = el('button', null, 'run');
@@ -103,11 +117,13 @@ function render(st) {
   $('body').replaceChildren(...out);
 }
 
+// Connected-but-unparseable (old daemon) vs. no daemon at all.
 function renderDown(err) {
+  const old = String(err).includes('older protocol');
   $('who').textContent = '';
   $('body').replaceChildren(el('div', 'down', null,
-    el('div', 'big', 'daemon not running'),
-    el('div', 'de', null, 'start it with ', el('code', null, 'otto daemon --install')),
+    el('div', 'big', old ? 'daemon speaks an older protocol — restart it' : 'daemon not running'),
+    old ? '' : el('div', 'de', null, 'start it with ', el('code', null, 'otto daemon --install')),
     el('div', 'why', String(err))));
 }
 

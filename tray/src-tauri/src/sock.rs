@@ -1,3 +1,4 @@
+// TODO: duplicated from src/client.rs + src/proto.rs; move to a shared ottobot-proto crate (follow-up PR).
 //! Daemon socket client: NDJSON over ~/.ottobot/otto.sock, one request line → one response line.
 //! Types re-declare the subset of the root crate's proto.rs the tray reads; unknown fields are ignored.
 
@@ -10,6 +11,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UnixStream;
 
+pub const OLD_PROTOCOL: &str = "daemon speaks an older protocol — restart it";
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(1500);
 
 pub fn socket_path() -> Result<PathBuf> {
@@ -67,23 +69,11 @@ pub struct Snapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Status {
-    pub root: PathBuf,
-    pub pid: u32,
-    pub running: usize,
-    pub skills: usize,
-    pub last_failure: Option<(String, String)>,
-    pub next_fire: Option<DateTime<Local>>,
-    pub runner_usage: RunnerUsage,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Request {
     Snapshot,
     RunNow { skill: String },
     Reload,
-    Status,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,7 +81,6 @@ pub enum Request {
 pub enum Response {
     Snapshot(Snapshot),
     Ok,
-    Status(Status),
     Error(String),
 }
 
@@ -117,7 +106,8 @@ impl Conn {
             if self.reader.read_line(&mut buf).await? == 0 {
                 bail!("daemon closed connection");
             }
-            Ok(serde_json::from_str(&buf)?)
+            // Connected but unparseable: a daemon from another build (mirrors `Conn::find`).
+            serde_json::from_str(&buf).context(OLD_PROTOCOL)
         };
         tokio::time::timeout(REQUEST_TIMEOUT, io).await.context("daemon timed out")?
     }
@@ -131,8 +121,9 @@ mod tests {
     fn wire_shapes() {
         assert_eq!(serde_json::to_string(&Request::RunNow { skill: "x".into() }).unwrap(), r#"{"type":"RunNow","skill":"x"}"#);
         assert!(matches!(serde_json::from_str(r#"{"type":"Ok"}"#).unwrap(), Response::Ok));
-        let s = r#"{"type":"Status","data":{"root":"/x","pid":1,"running":0,"skills":2,"last_failure":["a","r1"],"next_fire":null,
+        let s = r#"{"type":"Snapshot","data":{"root":"/x","store_dir":"/s","skills":[],"skill_errors":[],"runs":[],"log":[],"daemon_pid":1,
+            "runner_health":[["claude",{"Ok":"2.1"}]],
             "runner_usage":[["claude",{"Ok":[{"label":"5h","used_percent":37.0,"resets_at":null}]}],["codex",{"Err":"no sessions"}]]}}"#;
-        assert!(matches!(serde_json::from_str(s).unwrap(), Response::Status(Status { skills: 2, .. })));
+        assert!(matches!(serde_json::from_str(s).unwrap(), Response::Snapshot(Snapshot { daemon_pid: Some(1), .. })));
     }
 }

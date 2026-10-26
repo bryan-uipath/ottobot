@@ -79,9 +79,11 @@ body { font: 13px/1.4 var(--font-sans); color: var(--fg); padding: 10px; -webkit
 .row { display: flex; align-items: center; gap: 8px; min-height: 24px; }
 .row .name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
 .row .rest { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; color: var(--fg-de); font-variant-numeric: tabular-nums; }
+.rest.split { display: flex; justify-content: flex-end; }
+.rest.split > span { flex: none; }
+.rest.split > .why { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .none { color: var(--fg-light); min-height: 24px; }
-.sub { color: var(--fg-de); font-size: 12px; margin: -2px 0 4px 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.err { color: var(--err); }
+.err, .row .err { color: var(--err); }
 
 .spin { flex: none; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--brand-dim); border-top-color: var(--brand); animation: spin .9s linear infinite; }
 .dot { flex: none; width: 10px; text-align: center; color: var(--fg-light); }

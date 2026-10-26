@@ -3,11 +3,5 @@
   "identifier": "default",
   "description": "Popover window: invoke app commands, listen for visibility events.",
   "windows": ["popover"],
-  "permissions": [
-    "core:default",
-    "core:window:allow-show",
-    "core:window:allow-hide",
-    "core:window:allow-set-position",
-    "core:window:allow-set-focus"
-  ]
+  "permissions": ["core:default"]
 }
