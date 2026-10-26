@@ -352,6 +352,10 @@ fn draw_board(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
             line.spans.push(Span::styled(format!("  {}", v.note), dim()));
         }
         lines.push(line);
+        // One-line summary of the latest finished run.
+        if let Some(s) = latest_run(st, v).filter(|r| r.status != RunStatus::Running).and_then(|r| r.summary.as_deref()) {
+            lines.push(dim_line(format!("  ↳ {}", fit(s, w.saturating_sub(4)))));
+        }
     }
 
     // Scroll just enough to keep the selected row on screen.

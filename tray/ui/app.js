@@ -112,6 +112,9 @@ function render(st) {
     btn.disabled = !!v.active_run;
     btn.onclick = () => invoke('run_now', { skill: v.name }).then(refresh, refresh);
     out.push(row(glyph, v.name, `${when} · ${last}`, btn));
+    // One-line summary of the latest finished run.
+    const latest = st.runs.find(r => r.skill === v.name && r.status !== 'Running');
+    if (latest?.summary) out.push(el('div', 'sub', `↳ ${latest.summary}`));
   }
 
   $('body').replaceChildren(...out);

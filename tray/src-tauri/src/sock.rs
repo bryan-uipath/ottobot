@@ -34,6 +34,8 @@ pub struct RunMeta {
     pub started_at: DateTime<Local>,
     pub finished_at: Option<DateTime<Local>>,
     pub status: RunStatus,
+    #[serde(default)]
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

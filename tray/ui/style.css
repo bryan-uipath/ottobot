@@ -99,6 +99,7 @@ body { font: 13px/1.4 var(--font-sans); color: var(--fg); padding: 10px; -webkit
 button { font: inherit; color: var(--fg-de); background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-s); padding: 3px 10px; cursor: pointer; }
 button:hover { color: var(--fg); background: var(--bg-3); border-color: var(--border-emp); }
 button:disabled { opacity: .4; cursor: default; }
+.sub { margin: -2px 0 4px 20px; color: var(--fg-light); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row button { flex: none; padding: 0 8px; font-size: 12px; }
 .foot { display: flex; justify-content: space-between; padding: 10px 16px; border-top: 1px solid var(--border); }
 
