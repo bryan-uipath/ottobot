@@ -2,12 +2,13 @@
 
 mod ui;
 
-use crate::scheduler::Command;
-use crate::state::Shared;
+use crate::client::Backend;
+use crate::proto::Snapshot;
+use crate::run::RunEvent;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use std::collections::HashMap;
 use std::time::Duration;
-use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Pane {
@@ -30,16 +31,24 @@ pub struct Ui {
     pub frame: usize,
 }
 
-pub async fn run(shared: Shared, cmds: mpsc::Sender<Command>) -> Result<()> {
+/// What the TUI draws: the latest snapshot plus events fetched so far, per run id.
+#[derive(Default)]
+pub struct Model {
+    pub snap: Snapshot,
+    pub events: HashMap<String, Vec<RunEvent>>,
+    /// Backend error from the last refresh ("daemon disconnected: …"). Last snapshot stays on screen.
+    pub error: Option<String>,
+}
+
+pub async fn run(mut backend: Backend) -> Result<()> {
     let mut term = ratatui::init();
     let mut ui = Ui { pane: Pane::Skills, skill_idx: 0, run_idx: 0, session_scroll: 0, follow: true, show_log: false, run_filter: None, frame: 0 };
+    let mut m = Model::default();
     let res = loop {
         ui.frame = ui.frame.wrapping_add(1);
-        {
-            let st = shared.lock().unwrap();
-            if let Err(e) = term.draw(|f| ui::draw(f, &st, &mut ui)) {
-                break Err(e.into());
-            }
+        refresh(&mut backend, &mut m, &ui).await;
+        if let Err(e) = term.draw(|f| ui::draw(f, &m, &mut ui)) {
+            break Err(e.into());
         }
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(k) = event::read()? {
@@ -50,7 +59,7 @@ pub async fn run(shared: Shared, cmds: mpsc::Sender<Command>) -> Result<()> {
                 if ctrl_c || k.code == KeyCode::Char('q') {
                     break Ok(());
                 }
-                handle_key(k.code, &mut ui, &shared, &cmds).await;
+                handle_key(k.code, &mut ui, &mut m, &mut backend).await;
             }
         }
     };
@@ -58,11 +67,28 @@ pub async fn run(shared: Shared, cmds: mpsc::Sender<Command>) -> Result<()> {
     res
 }
 
-async fn handle_key(code: KeyCode, ui: &mut Ui, shared: &Shared, cmds: &mpsc::Sender<Command>) {
-    let (n_skills, n_runs) = {
-        let st = shared.lock().unwrap();
-        (st.skills.len(), ui::visible_runs(&st, ui).len())
-    };
+/// Pull a fresh snapshot, then only the new events of the selected run.
+async fn refresh(backend: &mut Backend, m: &mut Model, ui: &Ui) {
+    match backend.snapshot().await {
+        Ok(s) => {
+            m.snap = s;
+            m.error = None;
+        }
+        Err(e) => {
+            m.error = Some(format!("{e:#}"));
+            return;
+        }
+    }
+    let Some(id) = ui::visible_runs(&m.snap, ui).get(ui.run_idx).map(|r| r.id.clone()) else { return };
+    let cache = m.events.entry(id.clone()).or_default();
+    match backend.events(&id, cache.len()).await {
+        Ok(new) => cache.extend(new),
+        Err(e) => m.error = Some(format!("{e:#}")),
+    }
+}
+
+async fn handle_key(code: KeyCode, ui: &mut Ui, m: &mut Model, backend: &mut Backend) {
+    let (n_skills, n_runs) = (m.snap.skills.len(), ui::visible_runs(&m.snap, ui).len());
     match code {
         KeyCode::Tab => {
             ui.pane = match ui.pane {
@@ -110,7 +136,7 @@ async fn handle_key(code: KeyCode, ui: &mut Ui, shared: &Shared, cmds: &mpsc::Se
         KeyCode::Enter => match ui.pane {
             Pane::Runs => ui.pane = Pane::Session,
             Pane::Skills => {
-                let name = shared.lock().unwrap().skills.get(ui.skill_idx).map(|v| v.skill.name.clone());
+                let name = m.snap.skills.get(ui.skill_idx).map(|v| v.name.clone());
                 ui.run_filter = if ui.run_filter == name { None } else { name };
                 ui.run_idx = 0;
                 ui.follow = true;
@@ -122,15 +148,19 @@ async fn handle_key(code: KeyCode, ui: &mut Ui, shared: &Shared, cmds: &mpsc::Se
             ui.run_idx = 0;
         }
         KeyCode::Char('r') => {
-            let name = shared.lock().unwrap().skills.get(ui.skill_idx).map(|v| v.skill.name.clone());
+            let name = m.snap.skills.get(ui.skill_idx).map(|v| v.name.clone());
             if let Some(name) = name {
-                let _ = cmds.send(Command::RunNow(name)).await;
+                if let Err(e) = backend.run_now(&name).await {
+                    m.error = Some(format!("{e:#}"));
+                }
                 ui.run_idx = 0;
                 ui.follow = true;
             }
         }
         KeyCode::Char('R') => {
-            let _ = cmds.send(Command::Reload).await;
+            if let Err(e) = backend.reload().await {
+                m.error = Some(format!("{e:#}"));
+            }
         }
         KeyCode::Char('l') => ui.show_log = !ui.show_log,
         _ => {}

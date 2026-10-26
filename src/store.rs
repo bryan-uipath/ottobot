@@ -44,6 +44,21 @@ impl Store {
         Ok(Self { dir })
     }
 
+    /// One scheduler per store: a daemon and an in-process TUI on the same root would double-fire.
+    /// Pid file, checked with `kill -0` so a crash never leaves a permanent lock.
+    pub fn lock_scheduler(&self) -> Result<SchedulerLock> {
+        let path = self.dir.join("scheduler.pid");
+        if let Some(pid) = fs::read_to_string(&path).ok().and_then(|s| s.trim().parse::<u32>().ok()) {
+            let alive = pid != std::process::id()
+                && std::process::Command::new("kill").args(["-0", &pid.to_string()]).status().map(|s| s.success()).unwrap_or(false);
+            if alive {
+                anyhow::bail!("scheduler already running for this root (pid {pid}); use the TUI as a client or stop it");
+            }
+        }
+        fs::write(&path, std::process::id().to_string())?;
+        Ok(SchedulerLock { path })
+    }
+
     pub fn load_state(&self) -> State {
         fs::read_to_string(self.dir.join("state.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
@@ -86,5 +101,15 @@ impl Store {
         runs.sort_by(|a, b| b.meta.started_at.cmp(&a.meta.started_at));
         runs.truncate(limit);
         runs
+    }
+}
+
+pub struct SchedulerLock {
+    path: PathBuf,
+}
+
+impl Drop for SchedulerLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
     }
 }

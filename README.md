@@ -18,6 +18,7 @@ otto                          # watches ~/.ottobot/skills
 ```
 
 Requires `claude` on `PATH`. macOS runs are kept awake via `caffeinate`.
+`otto daemon --install` keeps the scheduler running without the TUI.
 
 ## A skill
 
@@ -88,6 +89,9 @@ prompt body never resets dedupe state; editing the trigger does.
 
 ```
 otto [ROOT]                 TUI. ROOT defaults to config skills_root, then ~/.ottobot/skills
+otto daemon [ROOT]          scheduler + socket server, foreground (see Daemon)
+otto daemon --install       LaunchAgent: start at login, keep alive (--uninstall removes it)
+otto status [--json]        one-line daemon summary; exit 1 if no daemon
 otto --list                 discovered skills, hashes, parsed triggers
 otto --run <skill>          one headless run, events to stdout (bypasses dedupe)
 otto --show <run-id>        dump a stored run's metadata and events
@@ -99,6 +103,37 @@ otto --tick 30s --runner claude
 Keys: `tab` pane · `j/k` move · `enter` filter runs by skill / open session ·
 `esc` clear filter · `r` run now · `R` reload · `l` scheduler log · `g/G`
 top / follow · `q` quit.
+
+## Daemon
+
+`otto daemon` runs the scheduler, store, caffeinate, and usage refresh, and
+serves `~/.ottobot/otto.sock` (mode 0600). One daemon per machine, one skills
+root. On start it removes a stale socket, refuses (exit 1) if another daemon
+answers, and writes `~/.ottobot/daemon.json` (`pid`, `root`, `socket`,
+`started_at`); SIGINT/SIGTERM remove both.
+
+`--install` writes `~/Library/LaunchAgents/com.ottobot.daemon.plist`
+(`otto daemon <root>`, RunAtLoad, KeepAlive, your current `PATH` so
+`claude`/`codex` resolve, stdout/stderr to `daemon.{out,err}.log` in the store
+dir) and `launchctl bootstrap`s it. `--uninstall` boots it out and deletes the
+plist. macOS only.
+
+`otto` connects to the socket first: same root → TUI drives the daemon
+(header shows its pid, or "disconnected · retrying" every 2s); different root
+→ prints both and exits 1; no daemon → in-process scheduler as before (exits
+with the TUI). `--run`/`--check` are always in-process. One scheduler per
+store: `<store>/scheduler.pid` (liveness via `kill -0`) makes a second one,
+daemon or in-process, refuse to start.
+
+Wire: newline-delimited JSON, one request → one response, connection reusable.
+
+```
+{"type":"Snapshot"}                         → {"type":"Snapshot","data":{root, skills, runs (meta only), log, …}}
+{"type":"Events","run":"<id>","from":N}     → {"type":"Events","data":[…events N..]}
+{"type":"RunNow","skill":"<name>"}          → {"type":"Ok"} | {"type":"Error","data":"no skill …"}
+{"type":"Reload"}                           → {"type":"Ok"}
+{"type":"Status"}                           → {"type":"Status","data":{root, pid, running, skills, last_failure, next_fire, runner_usage}}
+```
 
 ## Runners and usage
 
@@ -153,8 +188,11 @@ checker.rs    event checks: compile prose → script, run it, agent fallback
 scheduler.rs  tick loop, dedupe gate, spawn + stream runs
 runner/       Runner trait: command(), parse_line() -> RunEvent, preflight(), usage(); claude + codex
 store.rs      ~/.ottobot/projects/<root>/ state, run metadata, event logs
-state.rs      shared in-memory state between scheduler and TUI
-tui/          ratatui: header (Otto + status), skills, runs, session/log
+state.rs      shared in-memory state between scheduler and clients
+proto.rs      Snapshot/Status DTOs, socket Request/Response, request handler
+daemon.rs     `otto daemon`: socket server, daemon.json, signals, launchd install
+client.rs     Backend: in-process (Local) or socket (Remote, reconnecting)
+tui/          ratatui over a Backend: header (Otto + status), skills, runs, session/log
 otto.rs       header art from assets/otto.ans
 ```
 
@@ -165,7 +203,7 @@ otto.rs       header art from assets/otto.ans
 3. `env.repo`: fetch, worktree per run on `ottobot/<skill>/<run-id>`, worktree removed after, branch kept
 4. ✅ codex runner, per-runner preflight + usage
 4b. route by usage: pick runner/model with headroom when a skill allows alternatives
-5. headless daemon + `otto status`
+5. ✅ headless daemon + `otto status`
 
 ## Otto art
 

@@ -1,9 +1,9 @@
 //! Drawing. Header (Otto + status) / left: skills over runs / right: session or log.
 
-use super::{Pane, Ui};
+use super::{Model, Pane, Ui};
 use crate::otto;
-use crate::run::{RunEvent, RunStatus};
-use crate::state::AppState;
+use crate::proto::Snapshot;
+use crate::run::{RunEvent, RunMeta, RunStatus};
 use chrono::Local;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -21,12 +21,13 @@ fn spin(frame: usize) -> &'static str {
     SPINNER[frame % SPINNER.len()]
 }
 
-pub fn draw(f: &mut Frame, st: &AppState, ui: &mut Ui) {
+pub fn draw(f: &mut Frame, m: &Model, ui: &mut Ui) {
+    let st = &m.snap;
     let area = f.area();
     let header_h = otto::height().min(area.height / 3).max(6) + 1;
     let [header, body, footer] =
         Layout::vertical([Constraint::Length(header_h), Constraint::Min(5), Constraint::Length(1)]).areas(area);
-    draw_header(f, st, ui, header);
+    draw_header(f, m, ui, header);
     let [left, right] = Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)]).areas(body);
     let [skills, runs] = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(left);
     draw_skills(f, st, ui, skills);
@@ -34,18 +35,19 @@ pub fn draw(f: &mut Frame, st: &AppState, ui: &mut Ui) {
     if ui.show_log {
         draw_log(f, st, right);
     } else {
-        draw_session(f, st, ui, right);
+        draw_session(f, m, ui, right);
     }
     draw_footer(f, ui, footer);
 }
 
-fn draw_header(f: &mut Frame, st: &AppState, ui: &Ui, area: Rect) {
+fn draw_header(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
+    let st = &m.snap;
     let art_w = otto::WIDTH.min(area.width);
     let [art, info] = Layout::horizontal([Constraint::Length(art_w + 2), Constraint::Min(10)]).areas(area);
     f.render_widget(Paragraph::new(otto::text()), art);
 
     let now = Local::now();
-    let running = st.runs.iter().filter(|r| r.meta.status == RunStatus::Running).count();
+    let running = st.runs.iter().filter(|r| r.status == RunStatus::Running).count();
     let next_fire = st.skills.iter().filter_map(|v| v.next_fire).min();
     let mut lines = vec![
         Line::from(vec![Span::styled(" ottobot", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)), Span::styled(format!("  {}", st.root.display()), Style::default().fg(DIM))]),
@@ -56,6 +58,12 @@ fn draw_header(f: &mut Frame, st: &AppState, ui: &Ui, area: Rect) {
         kv("next fire", next_fire.map(|t| format!("{} ({})", t.format("%a %H:%M"), rel(t - now))).unwrap_or("—".into())),
         kv("awake", if st.caffeinated { "caffeinated ☕".to_string() } else { "not caffeinated".to_string() }),
     ];
+    // Daemon line only in remote mode; in-process header is unchanged.
+    match (&m.error, st.daemon_pid) {
+        (Some(e), _) => lines.push(Line::from(vec![Span::styled(format!(" {:<10} ", "daemon"), Style::default().fg(DIM)), Span::styled(format!("✗ {e} · retrying"), Style::default().fg(ORANGE))])),
+        (None, Some(pid)) => lines.push(kv("daemon", format!("pid {pid}"))),
+        (None, None) => {}
+    }
     for (name, h) in &st.runner_health {
         let usage = match st.runner_usage.iter().find(|(n, _)| n == name) {
             Some((_, Ok(u))) => format!(" · {u}"),
@@ -73,7 +81,7 @@ fn kv(k: &str, v: String) -> Line<'static> {
     Line::from(vec![Span::styled(format!(" {k:<10} "), Style::default().fg(DIM)), Span::raw(v)])
 }
 
-fn draw_skills(f: &mut Frame, st: &AppState, ui: &mut Ui, area: Rect) {
+fn draw_skills(f: &mut Frame, st: &Snapshot, ui: &mut Ui, area: Rect) {
     let items: Vec<ListItem> = st
         .skills
         .iter()
@@ -85,9 +93,9 @@ fn draw_skills(f: &mut Frame, st: &AppState, ui: &mut Ui, area: Rect) {
             };
             let when = v.next_fire.map(|t| format!("next {}", rel(t - Local::now()))).unwrap_or_else(|| "no schedule".into());
             let last = v.last_fired.map(|t| format!("last {}", rel_past(Local::now() - t))).unwrap_or_else(|| "never ran".into());
-            let trig = v.trigger.as_ref().map(|t| t.summary()).unwrap_or_else(|e| e.clone());
+            let trig = v.trigger.clone().unwrap_or_else(|e| e);
             ListItem::new(vec![
-                Line::from(vec![Span::styled(format!("{dot} "), Style::default().fg(color)), Span::styled(v.skill.name.clone(), Style::default().add_modifier(Modifier::BOLD))]),
+                Line::from(vec![Span::styled(format!("{dot} "), Style::default().fg(color)), Span::styled(v.name.clone(), Style::default().add_modifier(Modifier::BOLD))]),
                 Line::from(Span::styled(format!("  {trig}"), Style::default().fg(DIM))),
                 Line::from(vec![Span::styled(format!("  {when} · {last}"), Style::default().fg(DIM)), Span::styled(if v.note.is_empty() { String::new() } else { format!(" · {}", v.note) }, Style::default().fg(GOLD))]),
             ])
@@ -108,26 +116,26 @@ fn draw_skills(f: &mut Frame, st: &AppState, ui: &mut Ui, area: Rect) {
 }
 
 /// Runs shown in the runs pane, honoring the skill filter. Newest first.
-pub fn visible_runs<'a>(st: &'a AppState, ui: &Ui) -> Vec<&'a crate::run::Run> {
-    st.runs.iter().filter(|r| ui.run_filter.as_deref().map_or(true, |f| r.meta.skill == f)).collect()
+pub fn visible_runs<'a>(st: &'a Snapshot, ui: &Ui) -> Vec<&'a RunMeta> {
+    st.runs.iter().filter(|r| ui.run_filter.as_deref().map_or(true, |f| r.skill == f)).collect()
 }
 
-fn draw_runs(f: &mut Frame, st: &AppState, ui: &mut Ui, area: Rect) {
+fn draw_runs(f: &mut Frame, st: &Snapshot, ui: &mut Ui, area: Rect) {
     let runs = visible_runs(st, ui);
     let items: Vec<ListItem> = runs
         .iter()
         .map(|r| {
-            let (dot, color) = match &r.meta.status {
+            let (dot, color) = match &r.status {
                 RunStatus::Running => (spin(ui.frame), GOLD),
                 RunStatus::Succeeded => ("✓", Color::Green),
                 RunStatus::Failed(_) => ("✗", ORANGE),
             };
-            let dur = r.meta.finished_at.unwrap_or_else(Local::now) - r.meta.started_at;
-            let cost = r.meta.cost_usd.map(|c| format!(" ${c:.2}")).unwrap_or_default();
+            let dur = r.finished_at.unwrap_or_else(Local::now) - r.started_at;
+            let cost = r.cost_usd.map(|c| format!(" ${c:.2}")).unwrap_or_default();
             ListItem::new(vec![
-                Line::from(vec![Span::styled(format!("{dot} "), Style::default().fg(color)), Span::styled(r.meta.skill.clone(), Style::default().add_modifier(Modifier::BOLD)), Span::styled(format!("  {}", r.meta.started_at.format("%m-%d %H:%M")), Style::default().fg(DIM))]),
-                Line::from(Span::styled(format!("  {} · {}{}{}", rel_dur(dur), r.meta.runner, r.meta.model.as_ref().map(|m| format!("/{m}")).unwrap_or_default(), cost), Style::default().fg(DIM))),
-                Line::from(Span::styled(if r.meta.cwd.as_os_str().is_empty() { String::new() } else { format!("  ⌂ {}", short_path(&r.meta.cwd)) }, Style::default().fg(DIM))),
+                Line::from(vec![Span::styled(format!("{dot} "), Style::default().fg(color)), Span::styled(r.skill.clone(), Style::default().add_modifier(Modifier::BOLD)), Span::styled(format!("  {}", r.started_at.format("%m-%d %H:%M")), Style::default().fg(DIM))]),
+                Line::from(Span::styled(format!("  {} · {}{}{}", rel_dur(dur), r.runner, r.model.as_ref().map(|m| format!("/{m}")).unwrap_or_default(), cost), Style::default().fg(DIM))),
+                Line::from(Span::styled(if r.cwd.as_os_str().is_empty() { String::new() } else { format!("  ⌂ {}", short_path(&r.cwd)) }, Style::default().fg(DIM))),
             ])
         })
         .collect();
@@ -140,19 +148,20 @@ fn draw_runs(f: &mut Frame, st: &AppState, ui: &mut Ui, area: Rect) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_session(f: &mut Frame, st: &AppState, ui: &mut Ui, area: Rect) {
+fn draw_session(f: &mut Frame, m: &Model, ui: &mut Ui, area: Rect) {
+    let st = &m.snap;
     let Some(run) = visible_runs(st, ui).get(ui.run_idx).copied() else {
         f.render_widget(Paragraph::new("no runs yet · press r on a skill to run it now").fg(DIM).block(pane_block("session", ui.pane == Pane::Session)), area);
         return;
     };
-    let status = match run.meta.status {
+    let status = match run.status {
         RunStatus::Running => format!("{} running", spin(ui.frame)),
-        _ => status_str(&run.meta.status).to_string(),
+        _ => status_str(&run.status).to_string(),
     };
-    let title = format!("session · {} · {} · ⌂ {}", run.meta.id, status, short_path(&run.meta.cwd));
-    let log_path = short_path(&st.store_dir.join("runs").join(format!("{}.jsonl", run.meta.id)));
+    let title = format!("session · {} · {} · ⌂ {}", run.id, status, short_path(&run.cwd));
+    let log_path = short_path(&st.store_dir.join("runs").join(format!("{}.jsonl", run.id)));
     let mut lines: Vec<Line> = Vec::new();
-    for e in &run.events {
+    for e in m.events.get(&run.id).into_iter().flatten() {
         match e {
             RunEvent::Init { session, model } => lines.push(Line::from(Span::styled(format!("▸ session {session} {}", model.clone().unwrap_or_default()), Style::default().fg(DIM)))),
             RunEvent::Text(t) => {
@@ -175,7 +184,7 @@ fn draw_session(f: &mut Frame, st: &AppState, ui: &mut Ui, area: Rect) {
             }
         }
     }
-    if let RunStatus::Failed(why) = &run.meta.status {
+    if let RunStatus::Failed(why) = &run.status {
         lines.push(Line::from(Span::styled(format!("✗ {why}"), Style::default().fg(ORANGE))));
     }
     let inner_h = area.height.saturating_sub(2) as usize;
@@ -193,7 +202,7 @@ fn draw_session(f: &mut Frame, st: &AppState, ui: &mut Ui, area: Rect) {
     f.render_widget(p, area);
 }
 
-fn draw_log(f: &mut Frame, st: &AppState, area: Rect) {
+fn draw_log(f: &mut Frame, st: &Snapshot, area: Rect) {
     let h = area.height.saturating_sub(2) as usize;
     let lines: Vec<Line> = st.log.iter().rev().take(h).rev().map(|(t, m)| Line::from(vec![Span::styled(format!("{} ", t.format("%H:%M:%S")), Style::default().fg(DIM)), Span::raw(m.clone())])).collect();
     f.render_widget(Paragraph::new(lines).block(pane_block("scheduler log", false)), area);
