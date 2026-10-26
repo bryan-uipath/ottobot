@@ -54,6 +54,18 @@ impl Conn {
         Ok((c, s))
     }
 
+    /// Daemon at `path`, if one accepts connections. Connected but unintelligible is an error, not "no daemon".
+    pub async fn find(path: &Path) -> Result<Option<(Self, Status)>> {
+        let Ok(mut c) = Self::connect(path).await else { return Ok(None) };
+        match c.status().await {
+            Ok(s) => Ok(Some((c, s))),
+            Err(e) => bail!(
+                "otto daemon at {} speaks an older protocol; restart it (otto daemon --install, or kill the pid in ~/.ottobot/daemon.json): {e:#}",
+                path.display()
+            ),
+        }
+    }
+
     pub async fn status(&mut self) -> Result<Status> {
         match self.request(&Request::Status).await? {
             Response::Status(s) => Ok(s),
@@ -131,5 +143,32 @@ impl Backend {
 
     pub async fn reload(&mut self) -> Result<()> {
         self.request(Request::Reload).await.map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Relative path: absolute temp paths can exceed the AF_UNIX length limit.
+    #[tokio::test]
+    async fn find_distinguishes_absent_from_old_protocol() {
+        let path = PathBuf::from(format!("target/find-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        assert!(Conn::find(&path).await.unwrap().is_none());
+
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        tokio::spawn(async move {
+            let (s, _) = listener.accept().await.unwrap();
+            let (r, mut w) = s.into_split();
+            let mut line = String::new();
+            BufReader::new(r).read_line(&mut line).await.unwrap();
+            // Pre-board daemon: runner_usage was a summary string.
+            w.write_all(br#"{"type":"Status","data":{"root":"/x","pid":1,"running":0,"skills":0,"last_failure":null,"next_fire":null,"runner_usage":[["claude",{"Ok":"5h 3%"}]]}}"#).await.unwrap();
+            w.write_all(b"\n").await.unwrap();
+        });
+        let err = Conn::find(&path).await.err().map(|e| e.to_string()).unwrap_or_default();
+        let _ = std::fs::remove_file(&path);
+        assert!(err.contains("older protocol"), "{err}");
     }
 }

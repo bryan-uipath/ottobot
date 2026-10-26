@@ -27,6 +27,15 @@ fn spin(frame: usize) -> &'static str {
     SPINNER[frame % SPINNER.len()]
 }
 
+fn spin_span(frame: usize) -> Span<'static> {
+    Span::styled(format!("{} ", spin(frame)), Style::default().fg(ACCENT))
+}
+
+/// `<glyph> <name padded to NAME_W><rest>`, rest fit to the remaining width. Glyph spans are 2 cols.
+fn rail_row(glyph: Span<'static>, name: &str, rest: &str, rest_style: Style, w: usize) -> Line<'static> {
+    Line::from(vec![glyph, Span::styled(col(name, NAME_W), bold()), Span::styled(fit(rest, w.saturating_sub(NAME_W + 2)), rest_style)])
+}
+
 fn dim() -> Style {
     Style::default().fg(DIM)
 }
@@ -39,6 +48,22 @@ fn bold() -> Style {
 pub enum Attn<'a> {
     Run(&'a RunMeta),
     Invalid { label: String, err: String, skill: Option<String> },
+}
+
+/// Identity of an ATTENTION row: run id, or the invalid skill/file label.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AttnKey {
+    Run(String),
+    Invalid(String),
+}
+
+impl Attn<'_> {
+    pub fn key(&self) -> AttnKey {
+        match self {
+            Attn::Run(r) => AttnKey::Run(r.id.clone()),
+            Attn::Invalid { label, .. } => AttnKey::Invalid(label.clone()),
+        }
+    }
 }
 
 /// Board rows, already capped; indices in `Ui` point into these.
@@ -74,6 +99,25 @@ pub fn board(st: &Snapshot) -> Board<'_> {
     Board { now, now_more, attn, attn_more, next, failed: n_failed }
 }
 
+pub fn section_len(b: &Board, p: Pane) -> usize {
+    match p {
+        Pane::Now => b.now.len(),
+        Pane::Attention => b.attn.len(),
+        Pane::Next => b.next.len(),
+        Pane::Session => 0,
+    }
+}
+
+/// Row of the rail's selection within its section, if the selected item is still shown.
+pub fn sel_index(b: &Board, ui: &Ui) -> Option<usize> {
+    match ui.rail {
+        Pane::Now => b.now.iter().position(|r| Some(&r.id) == ui.now_run.as_ref()),
+        Pane::Attention => b.attn.iter().position(|a| Some(a.key()) == ui.attn_sel),
+        Pane::Next => b.next.iter().position(|v| Some(&v.name) == ui.next_skill.as_ref()),
+        Pane::Session => None,
+    }
+}
+
 /// Runs shown in history mode, honoring the skill filter. Newest first.
 pub fn visible_runs<'a>(st: &'a Snapshot, ui: &Ui) -> Vec<&'a RunMeta> {
     st.runs.iter().filter(|r| ui.run_filter.as_deref().map_or(true, |f| r.skill == f)).collect()
@@ -89,25 +133,27 @@ pub fn selected_run<'a>(st: &'a Snapshot, ui: &Ui) -> Option<&'a RunMeta> {
     if ui.history {
         return visible_runs(st, ui).get(ui.run_idx).copied();
     }
-    let b = board(st);
-    match ui.rail {
-        Pane::Now => b.now.get(ui.now_idx).copied(),
-        Pane::Attention => match b.attn.get(ui.att_idx) {
-            Some(Attn::Run(r)) => Some(*r),
-            _ => None,
-        },
-        Pane::Next => b.next.get(ui.next_idx).and_then(|v| latest_run(st, v)),
-        Pane::Session => None,
+    let run = |id: &str| st.runs.iter().find(|r| r.id == id);
+    match (ui.rail, &ui.attn_sel) {
+        (Pane::Now, _) => ui.now_run.as_deref().and_then(run),
+        (Pane::Attention, Some(AttnKey::Run(id))) => run(id),
+        (Pane::Next, _) => ui.next_skill.as_ref().and_then(|n| st.skills.iter().find(|v| v.name == *n)).and_then(|v| latest_run(st, v)),
+        _ => None,
     }
 }
 
 /// Skill `r` fires: the selected skill, or the selected run's skill.
 pub fn selected_skill(st: &Snapshot, ui: &Ui) -> Option<String> {
     if !ui.history {
-        let b = board(st);
-        match (ui.rail, b.attn.get(ui.att_idx)) {
-            (Pane::Next, _) => return b.next.get(ui.next_idx).map(|v| v.name.clone()),
-            (Pane::Attention, Some(Attn::Invalid { skill, .. })) => return skill.clone(),
+        match (ui.rail, &ui.attn_sel) {
+            (Pane::Next, _) => return ui.next_skill.clone(),
+            // Invalid skill (trigger parse error) is still runnable; an unparseable file is not.
+            (Pane::Attention, Some(k @ AttnKey::Invalid(_))) => {
+                return board(st).attn.iter().find(|a| a.key() == *k).and_then(|a| match a {
+                    Attn::Invalid { skill, .. } => skill.clone(),
+                    Attn::Run(_) => None,
+                })
+            }
             _ => {}
         }
     }
@@ -119,7 +165,8 @@ pub fn draw(f: &mut Frame, m: &Model, ui: &mut Ui) {
     let [strip, _, body, footer] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area);
     draw_strip(f, m, ui, strip);
     draw_footer(f, ui, footer);
-    if area.width < 60 {
+    ui.narrow = area.width < 60;
+    if ui.narrow {
         draw_right(f, m, ui, body);
     } else {
         let [rail, rule, _, right] = Layout::horizontal([Constraint::Length(RAIL_W), Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).areas(body);
@@ -140,10 +187,10 @@ pub fn draw(f: &mut Frame, m: &Model, ui: &mut Ui) {
 fn draw_strip(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
     let st = &m.snap;
     let b = board(st);
-    let running = st.runs.iter().filter(|r| r.status == RunStatus::Running).count();
+    let running = b.now.len() + b.now_more;
     let mut left = vec![Span::styled(" ottobot", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)), Span::raw("   ")];
     if running > 0 {
-        left.extend([Span::styled(format!("{} ", spin(ui.frame)), Style::default().fg(ACCENT)), Span::raw(format!("{running} running"))]);
+        left.extend([spin_span(ui.frame), Span::raw(format!("{running} running"))]);
     } else {
         left.push(Span::styled("0 running", dim()));
     }
@@ -200,15 +247,12 @@ fn draw_board(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
     if b.now.is_empty() {
         lines.push(dim_line("none"));
     }
+    let at = sel_index(&b, ui);
     for (i, r) in b.now.iter().enumerate() {
-        if ui.rail == Pane::Now && i == ui.now_idx {
+        if ui.rail == Pane::Now && at == Some(i) {
             sel = Some(lines.len());
         }
-        lines.push(Line::from(vec![
-            Span::styled(format!("{} ", spin(ui.frame)), Style::default().fg(ACCENT)),
-            Span::styled(col(&r.skill, NAME_W), bold()),
-            Span::raw(fit(&format!("{} · {}", clock(now - r.started_at), runner_model(r, None)), w.saturating_sub(NAME_W + 2))),
-        ]));
+        lines.push(rail_row(spin_span(ui.frame), &r.skill, &format!("{} · {}", clock(now - r.started_at), runner_model(r, None)), Style::default(), w));
         let tool = m.events.get(&r.id).and_then(|es| {
             es.iter().rev().find_map(|e| match e {
                 RunEvent::ToolUse { name, summary } => Some(format!("  ⚙ {name}  {summary}")),
@@ -227,7 +271,7 @@ fn draw_board(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
         lines.push(dim_line("none"));
     }
     for (i, a) in b.attn.iter().enumerate() {
-        if ui.rail == Pane::Attention && i == ui.att_idx {
+        if ui.rail == Pane::Attention && at == Some(i) {
             sel = Some(lines.len());
         }
         let (name, rest) = match a {
@@ -241,9 +285,9 @@ fn draw_board(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
                 let room = w.saturating_sub(NAME_W + 2 + tail.chars().count());
                 (r.skill.clone(), format!("{}{tail}", fit(&why, room)))
             }
-            Attn::Invalid { label, err, .. } => (label.clone(), fit(err.lines().next().unwrap_or_default(), w.saturating_sub(NAME_W + 2))),
+            Attn::Invalid { label, err, .. } => (label.clone(), err.lines().next().unwrap_or_default().to_string()),
         };
-        lines.push(Line::from(vec![Span::styled("✗ ", Style::default().fg(ORANGE)), Span::styled(col(&name, NAME_W), bold()), Span::styled(rest, dim())]));
+        lines.push(rail_row(Span::styled("✗ ", Style::default().fg(ORANGE)), &name, &rest, dim(), w));
     }
     more(&mut lines, b.attn_more);
     lines.push(Line::from(""));
@@ -258,14 +302,14 @@ fn draw_board(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
             (Ok(_), Some(Ok(ws))) if ws.is_empty() => lines.push(dim_line(format!("{name:<6}  no usage data"))),
             (Ok(_), Some(Ok(ws))) => {
                 for u in ws {
-                    let used = u.used_percent.clamp(0.0, 100.0);
+                    let used = 100.0 - u.left_percent();
                     let filled = ((used / 100.0 * BAR_W as f64).round() as usize).min(BAR_W);
                     let color = if used >= 80.0 { ORANGE } else { ACCENT };
                     lines.push(Line::from(vec![
                         Span::raw(format!("{name:<6} {:<4} ", u.label)),
                         Span::styled("█".repeat(filled), Style::default().fg(color)),
                         Span::styled("░".repeat(BAR_W - filled), dim()),
-                        Span::raw(format!("  {:>3.0}% left", 100.0 - used)),
+                        Span::raw(format!("  {:>3.0}% left", u.left_percent())),
                     ]));
                 }
             }
@@ -287,11 +331,11 @@ fn draw_board(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
         .collect();
     let when_w = whens.iter().map(|s| s.chars().count() + 2).max().unwrap_or(0).max(12);
     for (i, (v, when)) in b.next.iter().zip(&whens).enumerate() {
-        if ui.rail == Pane::Next && i == ui.next_idx {
+        if ui.rail == Pane::Next && at == Some(i) {
             sel = Some(lines.len());
         }
         let glyph = match (&v.active_run, &v.trigger) {
-            (Some(_), _) => Span::styled(format!("{} ", spin(ui.frame)), Style::default().fg(ACCENT)),
+            (Some(_), _) => spin_span(ui.frame),
             (None, Err(_)) => Span::styled("✗ ", Style::default().fg(ORANGE)),
             (None, Ok(_)) => Span::styled("○ ", dim()),
         };
@@ -302,18 +346,21 @@ fn draw_board(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
         };
         let rest = format!("{when:<when_w$}{last}");
         let used = 2 + NAME_W + rest.chars().count();
-        let mut spans = vec![glyph, Span::styled(col(&v.name, NAME_W), bold()), Span::raw(rest)];
+        let mut line = rail_row(glyph, &v.name, &rest, Style::default(), w);
         // Scheduler note only if it fits whole.
         if !v.note.is_empty() && used + 2 + v.note.chars().count() <= w {
-            spans.push(Span::styled(format!("  {}", v.note), dim()));
+            line.spans.push(Span::styled(format!("  {}", v.note), dim()));
         }
-        lines.push(Line::from(spans));
+        lines.push(line);
     }
 
+    // Scroll just enough to keep the selected row on screen.
+    let row = sel.unwrap_or(0) as u16;
+    let top = row.saturating_sub(area.height.saturating_sub(1));
     let inner = Rect { x: area.x + 1, width: area.width.saturating_sub(2), ..area };
-    f.render_widget(Paragraph::new(lines), inner);
-    if let Some(i) = sel {
-        mark(f, area, i as u16, ui.pane != Pane::Session);
+    f.render_widget(Paragraph::new(lines).scroll((top, 0)), inner);
+    if sel.is_some() {
+        mark(f, area, row - top, ui.pane != Pane::Session);
     }
 }
 
@@ -348,19 +395,15 @@ fn draw_history(f: &mut Frame, st: &Snapshot, ui: &mut Ui, area: Rect) {
     let items: Vec<ListItem> = runs
         .iter()
         .map(|r| {
-            let (dot, color) = match &r.status {
-                RunStatus::Running => (spin(ui.frame), ACCENT),
-                RunStatus::Succeeded => ("✓", Color::Green),
-                RunStatus::Failed(_) => ("✗", ORANGE),
+            let glyph = match &r.status {
+                RunStatus::Running => spin_span(ui.frame),
+                RunStatus::Succeeded => Span::styled("✓ ", Style::default().fg(Color::Green)),
+                RunStatus::Failed(_) => Span::styled("✗ ", Style::default().fg(ORANGE)),
             };
             let dur = r.finished_at.unwrap_or_else(Local::now) - r.started_at;
             let cost = r.cost_usd.map(|c| format!(" · ${c:.2}")).unwrap_or_default();
-            ListItem::new(Line::from(vec![
-                Span::styled(format!("{dot} "), Style::default().fg(color)),
-                Span::styled(col(&r.skill, NAME_W), bold()),
-                // When · duration · cost; runner/model live in the session header.
-                Span::styled(fit(&format!("{}  {}{cost}", r.started_at.format("%m-%d %H:%M"), rel_dur(dur)), w.saturating_sub(NAME_W + 2)), dim()),
-            ]))
+            // When · duration · cost; runner/model live in the session header.
+            ListItem::new(rail_row(glyph, &r.skill, &format!("{}  {}{cost}", r.started_at.format("%m-%d %H:%M"), rel_dur(dur)), dim(), w))
         })
         .collect();
     let mut state = ListState::default().with_selected(Some(ui.run_idx));
@@ -381,7 +424,8 @@ fn draw_session(f: &mut Frame, m: &Model, ui: &mut Ui, area: Rect) {
     let Some(run) = selected_run(st, ui) else {
         // Parse error selected in ATTENTION: show it in full.
         let b = board(st);
-        let text = match (ui.history, ui.rail, b.attn.get(ui.att_idx)) {
+        let invalid = b.attn.iter().find(|a| ui.attn_sel.as_ref() == Some(&a.key()));
+        let text = match (ui.history, ui.rail, invalid) {
             (false, Pane::Attention, Some(Attn::Invalid { label, err, .. })) => {
                 let mut l = vec![Line::from(Span::styled(format!("✗ {label}"), Style::default().fg(ORANGE).add_modifier(Modifier::BOLD))), Line::from("")];
                 l.extend(err.lines().map(|s| Line::from(s.to_string())));

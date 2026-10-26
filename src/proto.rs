@@ -22,7 +22,7 @@ pub struct Snapshot {
     pub next_tick: Option<DateTime<Local>>,
     pub caffeinated: bool,
     pub runner_health: Vec<(String, Result<String, String>)>,
-    pub runner_usage: Vec<(String, Result<Vec<crate::runner::UsageWindow>, String>)>,
+    pub runner_usage: crate::runner::RunnerUsage,
     /// Set when served by a daemon; None in-process.
     pub daemon_pid: Option<u32>,
 }
@@ -51,7 +51,7 @@ pub struct Status {
     /// Newest failed run: (skill, run id).
     pub last_failure: Option<(String, String)>,
     pub next_fire: Option<DateTime<Local>>,
-    pub runner_usage: Vec<(String, Result<Vec<crate::runner::UsageWindow>, String>)>,
+    pub runner_usage: crate::runner::RunnerUsage,
 }
 
 /// e.g. `{"type":"Events","run":"20260101-120000-x","from":0}`, `{"type":"Status"}`.

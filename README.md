@@ -128,6 +128,9 @@ always in-process. Locks are `flock`s the kernel drops on exit:
 (one scheduler per root, daemon or in-process). `--install` forwards explicit
 `--tick`/`--runner`.
 
+The protocol is unversioned: after upgrading the binary, restart the daemon
+(a client that can't parse its answers exits with that hint).
+
 Wire: newline-delimited JSON, one request → one response, connection reusable.
 
 ```

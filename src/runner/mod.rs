@@ -25,6 +25,23 @@ pub struct UsageWindow {
     pub resets_at: Option<DateTime<Utc>>,
 }
 
+impl UsageWindow {
+    pub fn left_percent(&self) -> f64 {
+        (100.0 - self.used_percent).clamp(0.0, 100.0)
+    }
+}
+
+/// Per-runner quota windows, or why they couldn't be read.
+pub type RunnerUsage = Vec<(String, Result<Vec<UsageWindow>, String>)>;
+
+/// e.g. `5h 63% left · 7d 93% left`.
+pub fn summary(ws: &[UsageWindow]) -> String {
+    if ws.is_empty() {
+        return "no usage data".into();
+    }
+    ws.iter().map(|w| format!("{} {:.0}% left", w.label, w.left_percent())).collect::<Vec<_>>().join(" · ")
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Usage {
     pub windows: Vec<UsageWindow>,
@@ -40,13 +57,6 @@ impl Usage {
             }
         }
         self
-    }
-
-    pub fn summary(&self) -> String {
-        if self.windows.is_empty() {
-            return "no usage data".into();
-        }
-        self.windows.iter().map(|w| format!("{} {:.0}% left", w.label, (100.0 - w.used_percent).max(0.0))).collect::<Vec<_>>().join(" · ")
     }
 }
 

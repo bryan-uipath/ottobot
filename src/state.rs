@@ -32,7 +32,7 @@ pub struct AppState {
     pub caffeinated: bool,
     pub runner_health: Vec<(String, Result<String, String>)>,
     /// Per-runner quota windows, refreshed in the background.
-    pub runner_usage: Vec<(String, Result<Vec<crate::runner::UsageWindow>, String>)>,
+    pub runner_usage: crate::runner::RunnerUsage,
     /// This process's pid when running as `otto daemon`.
     pub daemon_pid: Option<u32>,
 }

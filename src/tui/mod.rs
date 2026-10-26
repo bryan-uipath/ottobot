@@ -23,9 +23,12 @@ pub struct Ui {
     pub pane: Pane,
     /// Board section whose selection drives the session pane; never Session.
     pub rail: Pane,
-    pub now_idx: usize,
-    pub att_idx: usize,
-    pub next_idx: usize,
+    /// Selection per board section by identity, so list churn/re-sorting doesn't move it.
+    pub now_run: Option<String>,
+    pub attn_sel: Option<ui::AttnKey>,
+    pub next_skill: Option<String>,
+    /// Last resolved row per section; fallback when the selected item disappears.
+    pub pos: [usize; 3],
     /// Selection in history mode, over `visible_runs()`.
     pub run_idx: usize,
     /// `h`: rail shows the full run list instead of the board.
@@ -34,8 +37,8 @@ pub struct Ui {
     pub about: bool,
     /// Initial selection made (waits for the first non-empty snapshot).
     pub picked: bool,
-    /// Skill of the run last shown in the session pane; lets a finished NOW run stay selected.
-    pub shown_skill: Option<String>,
+    /// Last draw was < 60 cols: no rail, so keys act as if Session is focused.
+    pub narrow: bool,
     pub session_scroll: u16,
     /// Auto-follow session output while the run is live.
     pub follow: bool,
@@ -62,14 +65,15 @@ pub async fn run(mut backend: Backend) -> Result<()> {
     let mut ui = Ui {
         pane: Pane::Now,
         rail: Pane::Now,
-        now_idx: 0,
-        att_idx: 0,
-        next_idx: 0,
+        now_run: None,
+        attn_sel: None,
+        next_skill: None,
+        pos: [0; 3],
         run_idx: 0,
         history: false,
         about: false,
         picked: false,
-        shown_skill: None,
+        narrow: false,
         session_scroll: 0,
         follow: true,
         show_log: false,
@@ -103,7 +107,7 @@ pub async fn run(mut backend: Backend) -> Result<()> {
     res
 }
 
-/// Pull a fresh snapshot, then new events of running runs (NOW tool line) and the selected run.
+/// Pull a fresh snapshot, then new events of displayed NOW runs (tool line) and the selected run.
 async fn refresh(backend: &mut Backend, m: &mut Model, ui: &mut Ui) {
     match backend.snapshot().await {
         Ok(s) => {
@@ -120,8 +124,7 @@ async fn refresh(backend: &mut Backend, m: &mut Model, ui: &mut Ui) {
     } else {
         pick_initial(&m.snap, ui);
     }
-    ui.shown_skill = ui::selected_run(&m.snap, ui).map(|r| r.skill.clone());
-    let mut ids: Vec<String> = m.snap.runs.iter().filter(|r| r.status == RunStatus::Running).map(|r| r.id.clone()).collect();
+    let mut ids: Vec<String> = ui::board(&m.snap).now.iter().map(|r| r.id.clone()).collect();
     if let Some(r) = ui::selected_run(&m.snap, ui) {
         if !ids.contains(&r.id) {
             ids.push(r.id.clone());
@@ -141,40 +144,84 @@ fn pick_initial(st: &Snapshot, ui: &mut Ui) {
     if st.skills.is_empty() && st.skill_errors.is_empty() {
         return;
     }
-    let b = ui::board(st);
-    let first_fail = b.attn.iter().position(|a| matches!(a, ui::Attn::Run(_)));
-    (ui.rail, ui.now_idx, ui.att_idx, ui.next_idx) = match (b.now.is_empty(), first_fail) {
-        (false, _) => (Pane::Now, 0, 0, 0),
-        (true, Some(i)) => (Pane::Attention, 0, i, 0),
-        (true, None) => (Pane::Next, 0, 0, 0),
-    };
+    fallback(st, ui);
     ui.pane = ui.rail;
     ui.picked = true;
 }
 
-/// Keep board indices in range. A selected NOW run that finished moves to its skill's NEXT row.
-fn settle(st: &Snapshot, ui: &mut Ui) {
+/// Select the first running run, else the newest failure, else the first NEXT row.
+fn fallback(st: &Snapshot, ui: &mut Ui) {
     let b = ui::board(st);
-    if ui.rail == Pane::Now && ui.now_idx >= b.now.len() {
-        match ui.shown_skill.as_ref().and_then(|s| b.next.iter().position(|v| v.name == *s)) {
-            Some(i) => {
-                ui.next_idx = i;
-                ui.rail = Pane::Next;
-                if ui.pane == Pane::Now {
-                    ui.pane = Pane::Next;
-                }
+    if let Some(r) = b.now.first() {
+        (ui.rail, ui.now_run) = (Pane::Now, Some(r.id.clone()));
+    } else if let Some(a) = b.attn.iter().find(|a| matches!(a, ui::Attn::Run(_))).or(b.attn.first()) {
+        (ui.rail, ui.attn_sel) = (Pane::Attention, Some(a.key()));
+    } else {
+        (ui.rail, ui.next_skill) = (Pane::Next, b.next.first().map(|v| v.name.clone()));
+    }
+}
+
+fn slot(p: Pane) -> usize {
+    match p {
+        Pane::Now => 0,
+        Pane::Attention => 1,
+        _ => 2,
+    }
+}
+
+/// Resolve the rail's selection; re-anchor it when its item is gone.
+/// A finished NOW run moves to its skill's NEXT row; anything else clamps to the nearest row.
+fn settle(st: &Snapshot, ui: &mut Ui) {
+    if ui.history {
+        return;
+    }
+    let b = ui::board(st);
+    if ui.rail == Pane::Now && ui::sel_index(&b, ui).is_none() {
+        let done = ui.now_run.as_ref().and_then(|id| st.runs.iter().find(|r| r.id == *id)).filter(|r| r.status != RunStatus::Running);
+        if let Some(r) = done {
+            ui.next_skill = Some(r.skill.clone());
+            ui.rail = Pane::Next;
+            if ui.pane == Pane::Now {
+                ui.pane = Pane::Next;
             }
-            None => ui.now_idx = b.now.len().saturating_sub(1),
         }
     }
-    ui.att_idx = ui.att_idx.min(b.attn.len().saturating_sub(1));
-    ui.next_idx = ui.next_idx.min(b.next.len().saturating_sub(1));
+    let n = ui::section_len(&b, ui.rail);
+    if n == 0 {
+        let was_rail = ui.pane == ui.rail;
+        fallback(st, ui);
+        if was_rail {
+            ui.pane = ui.rail;
+        }
+        return settle_pos(&ui::board(st), ui);
+    }
+    if ui::sel_index(&b, ui).is_none() {
+        let i = ui.pos[slot(ui.rail)].min(n - 1);
+        select(&b, ui, i);
+    }
+    settle_pos(&b, ui);
+}
+
+fn settle_pos(b: &ui::Board, ui: &mut Ui) {
+    if let Some(i) = ui::sel_index(b, ui) {
+        ui.pos[slot(ui.rail)] = i;
+    }
+}
+
+/// Point the rail's selection at row `i` of its section.
+fn select(b: &ui::Board, ui: &mut Ui, i: usize) {
+    match ui.rail {
+        Pane::Now => ui.now_run = b.now.get(i).map(|r| r.id.clone()),
+        Pane::Attention => ui.attn_sel = b.attn.get(i).map(|a| a.key()),
+        _ => ui.next_skill = b.next.get(i).map(|v| v.name.clone()),
+    }
+    ui.pos[slot(ui.rail)] = i;
 }
 
 /// Board sections that have selectable rows, in tab order.
 fn sections(st: &Snapshot) -> Vec<Pane> {
     let b = ui::board(st);
-    [(Pane::Now, b.now.len()), (Pane::Attention, b.attn.len()), (Pane::Next, b.next.len())].into_iter().filter(|(_, n)| *n > 0).map(|(p, _)| p).collect()
+    [Pane::Now, Pane::Attention, Pane::Next].into_iter().filter(|p| ui::section_len(&b, *p) > 0).collect()
 }
 
 /// Tab order: board sections (non-empty) then session; history mode is just rail ↔ session.
@@ -186,6 +233,7 @@ fn cycle(ui: &mut Ui, st: &Snapshot, back: bool) {
     ui.pane = order[if back { (cur + n - 1) % n } else { (cur + 1) % n }];
     if ui.pane != Pane::Session {
         ui.rail = ui.pane;
+        settle(st, ui);
         reset_session(ui);
     }
 }
@@ -197,20 +245,14 @@ fn reset_session(ui: &mut Ui) {
 
 /// Move the focused rail selection by `d`, clamped to the rows shown.
 fn move_sel(ui: &mut Ui, st: &Snapshot, d: isize) {
-    let b = ui::board(st);
-    let n = match (ui.history, ui.rail) {
-        (true, _) => ui::visible_runs(st, ui).len(),
-        (false, Pane::Now) => b.now.len(),
-        (false, Pane::Attention) => b.attn.len(),
-        (false, _) => b.next.len(),
-    };
-    let idx = match (ui.history, ui.rail) {
-        (true, _) => &mut ui.run_idx,
-        (false, Pane::Now) => &mut ui.now_idx,
-        (false, Pane::Attention) => &mut ui.att_idx,
-        (false, _) => &mut ui.next_idx,
-    };
-    *idx = idx.saturating_add_signed(d).min(n.saturating_sub(1));
+    if ui.history {
+        ui.run_idx = ui.run_idx.saturating_add_signed(d).min(ui::visible_runs(st, ui).len().saturating_sub(1));
+    } else {
+        let b = ui::board(st);
+        let n = ui::section_len(&b, ui.rail);
+        let cur = ui::sel_index(&b, ui).unwrap_or(0);
+        select(&b, ui, cur.saturating_add_signed(d).min(n.saturating_sub(1)));
+    }
     reset_session(ui);
 }
 
@@ -221,14 +263,17 @@ async fn handle_key(code: KeyCode, ui: &mut Ui, m: &mut Model, backend: &mut Bac
         }
         return;
     }
+    // Narrow: no rail drawn, so the session has focus and tab has nowhere to go.
+    let pane = if ui.narrow { Pane::Session } else { ui.pane };
     match code {
+        KeyCode::Tab | KeyCode::BackTab if ui.narrow => {}
         KeyCode::Tab => cycle(ui, &m.snap, false),
         KeyCode::BackTab => cycle(ui, &m.snap, true),
-        KeyCode::Char('j') | KeyCode::Down if ui.pane == Pane::Session => {
+        KeyCode::Char('j') | KeyCode::Down if pane == Pane::Session => {
             ui.follow = false;
             ui.session_scroll = ui.session_scroll.saturating_add(1);
         }
-        KeyCode::Char('k') | KeyCode::Up if ui.pane == Pane::Session => {
+        KeyCode::Char('k') | KeyCode::Up if pane == Pane::Session => {
             ui.follow = false;
             ui.session_scroll = ui.session_scroll.saturating_sub(1);
         }
@@ -239,11 +284,11 @@ async fn handle_key(code: KeyCode, ui: &mut Ui, m: &mut Model, backend: &mut Bac
             ui.follow = false;
             ui.session_scroll = 0;
         }
-        KeyCode::Enter => match (ui.history, ui.pane) {
+        KeyCode::Enter => match (ui.history, pane) {
             (_, Pane::Session) => {}
             // NEXT skill: toggle the history filter and show history.
             (false, Pane::Next) => {
-                let name = ui::board(&m.snap).next.get(ui.next_idx).map(|v| v.name.clone());
+                let name = ui.next_skill.clone();
                 ui.run_filter = if ui.run_filter == name { None } else { name };
                 ui.history = true;
                 ui.run_idx = 0;
@@ -272,8 +317,8 @@ async fn handle_key(code: KeyCode, ui: &mut Ui, m: &mut Model, backend: &mut Bac
             // Follow the new run: history → top row; board → this skill's NEXT row (its latest run).
             if ui.history {
                 ui.run_idx = 0;
-            } else if let Some(i) = ui::board(&m.snap).next.iter().position(|v| v.name == name) {
-                ui.next_idx = i;
+            } else if m.snap.skills.iter().any(|v| v.name == name) {
+                ui.next_skill = Some(name);
                 ui.rail = Pane::Next;
                 if ui.pane != Pane::Session {
                     ui.pane = Pane::Next;
