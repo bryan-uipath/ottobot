@@ -50,6 +50,18 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.usage {
+        for r in runner::all() {
+            let ver = r.preflight().map_err(|e| format!("{e:#}"));
+            let usage = r.usage().map(|u| u.summary()).unwrap_or_else(|e| format!("usage unavailable: {e:#}"));
+            match ver {
+                Ok(v) => println!("{:<8} ✓ {v:<24} {usage}", r.name()),
+                Err(e) => println!("{:<8} ✗ {e}", r.name()),
+            }
+        }
+        return Ok(());
+    }
+
     let cfg = config::load()?;
     let root = config::skills_root(cli.root.clone(), &cfg)?;
     let tick = cli.tick.or(cfg.tick).unwrap_or(Duration::from_secs(60));
@@ -69,18 +81,6 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    if cli.usage {
-        for r in runner::all() {
-            let ver = r.preflight().map_err(|e| format!("{e:#}"));
-            let usage = r.usage().map(|u| u.summary()).unwrap_or_else(|e| format!("usage unavailable: {e:#}"));
-            match ver {
-                Ok(v) => println!("{:<8} ✓ {v:<24} {usage}", r.name()),
-                Err(e) => println!("{:<8} ✗ {e}", r.name()),
-            }
-        }
-        return Ok(());
-    }
-
     if let Some(id) = &cli.show {
         let Some(run) = store.load_runs(usize::MAX).into_iter().find(|r| r.meta.id == *id) else { anyhow::bail!("no run {id}") };
         println!("{}", serde_json::to_string_pretty(&run.meta)?);
@@ -96,19 +96,12 @@ async fn main() -> Result<()> {
 
     let mut app = state::AppState { root: root.clone(), store_dir: store.dir.clone(), ..Default::default() };
     app.runs = store.load_runs(200);
-    app.runner_health = runner::all()
-        .into_iter()
-        .map(|r| {
-            let health = r.preflight().map(|v| match r.usage() {
-                Ok(u) => format!("{v} · {}", u.summary()),
-                Err(_) => v,
-            });
-            (r.name().to_string(), health.map_err(|e| format!("{e:#}")))
-        })
-        .collect();
+    app.runner_health = runner::all().into_iter().map(|r| (r.name().to_string(), r.preflight().map_err(|e| format!("{e:#}")))).collect();
     let mut caff = caffeinate::start();
     app.caffeinated = caff.is_some();
     let shared: state::Shared = Arc::new(Mutex::new(app));
+
+    tokio::spawn(refresh_usage(shared.clone()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(16);
     let sched = scheduler::Scheduler::new(shared.clone(), store, tick, default_runner);
@@ -122,6 +115,19 @@ async fn main() -> Result<()> {
         let _ = c.kill();
     }
     res
+}
+
+/// Poll runner quota off the UI thread: usage() does network/file IO and may take seconds.
+async fn refresh_usage(shared: state::Shared) {
+    loop {
+        let usage = tokio::task::spawn_blocking(|| {
+            runner::all().into_iter().map(|r| (r.name().to_string(), r.usage().map(|u| u.summary()).map_err(|e| format!("{e:#}")))).collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        shared.lock().unwrap().runner_usage = usage;
+        tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+    }
 }
 
 /// Fire one skill and stream its events to stdout until it finishes.

@@ -30,9 +30,15 @@ pub struct Usage {
 }
 
 impl Usage {
-    /// Remaining capacity, bounded by the tightest window. 100 when nothing is reported.
-    pub fn headroom(&self) -> f64 {
-        100.0 - self.windows.iter().map(|w| w.used_percent).fold(0.0, f64::max)
+    /// Windows whose reset time has passed are fully available again (matters for cached sources).
+    pub fn expired_reset(mut self) -> Self {
+        let now = Utc::now();
+        for w in &mut self.windows {
+            if w.resets_at.is_some_and(|t| t < now) {
+                w.used_percent = 0.0;
+            }
+        }
+        self
     }
 
     pub fn summary(&self) -> String {
@@ -64,6 +70,19 @@ pub fn by_name(name: &str) -> Result<Box<dyn Runner>> {
 
 pub fn all() -> Vec<Box<dyn Runner>> {
     vec![Box::new(claude::Claude), Box::new(codex::Codex::default())]
+}
+
+/// `<bin> --version`, trimmed. Shared preflight body.
+pub(crate) fn version(bin: &str) -> Result<String> {
+    use anyhow::Context;
+    which(bin).with_context(|| format!("`{bin}` not on PATH"))?;
+    let out = std::process::Command::new(bin).arg("--version").output().with_context(|| format!("{bin} --version"))?;
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+pub(crate) fn truncate(s: &str, n: usize) -> String {
+    let s = s.trim().replace('\n', " ⏎ ");
+    if s.chars().count() <= n { s } else { format!("{}…", s.chars().take(n).collect::<String>()) }
 }
 
 pub(crate) fn which(bin: &str) -> Option<std::path::PathBuf> {

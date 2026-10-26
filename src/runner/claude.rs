@@ -1,6 +1,6 @@
 //! `claude -p --output-format stream-json` runner.
 
-use super::{which, Invocation, Runner, Usage, UsageWindow};
+use super::{truncate, version, Invocation, Runner, Usage, UsageWindow};
 use crate::run::RunEvent;
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -52,19 +52,27 @@ impl Runner for Claude {
     }
 
     fn preflight(&self) -> Result<String> {
-        which("claude").context("`claude` not on PATH")?;
-        let out = std::process::Command::new("claude").arg("--version").output().context("claude --version")?;
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        version("claude")
     }
 
     /// OAuth usage endpoint, with the token Claude Code keeps in the keychain (macOS) or ~/.claude/.credentials.json.
     fn usage(&self) -> Result<Usage> {
         let token = oauth_token()?;
-        let out = std::process::Command::new("curl")
-            .args(["-sS", "--max-time", "10", "-H", &format!("Authorization: Bearer {token}"), "-H", "anthropic-beta: oauth-2025-04-20"])
+        // Auth header goes in via stdin (`-H @-`) so the token never shows up in `ps`.
+        let mut child = std::process::Command::new("curl")
+            .args(["-sS", "--max-time", "10", "-H", "@-", "-H", "anthropic-beta: oauth-2025-04-20"])
             .arg("https://api.anthropic.com/api/oauth/usage")
-            .output()
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
             .context("curl")?;
+        {
+            use std::io::Write;
+            let mut stdin = child.stdin.take().context("curl stdin")?;
+            writeln!(stdin, "Authorization: Bearer {token}")?;
+        }
+        let out = child.wait_with_output().context("curl")?;
         let v: Value = serde_json::from_slice(&out.stdout).context("usage response")?;
         if let Some(e) = v["error"]["message"].as_str() {
             anyhow::bail!("{e}");
@@ -139,7 +147,3 @@ fn result_text(content: &Value) -> String {
     }
 }
 
-fn truncate(s: &str, n: usize) -> String {
-    let s = s.trim().replace('\n', " ⏎ ");
-    if s.chars().count() <= n { s } else { format!("{}…", s.chars().take(n).collect::<String>()) }
-}

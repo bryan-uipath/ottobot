@@ -57,8 +57,12 @@ fn draw_header(f: &mut Frame, st: &AppState, ui: &Ui, area: Rect) {
         kv("awake", if st.caffeinated { "caffeinated ☕".to_string() } else { "not caffeinated".to_string() }),
     ];
     for (name, h) in &st.runner_health {
+        let usage = match st.runner_usage.iter().find(|(n, _)| n == name) {
+            Some((_, Ok(u))) => format!(" · {u}"),
+            _ => String::new(),
+        };
         lines.push(match h {
-            Ok(v) => kv(name, format!("✓ {v}")),
+            Ok(v) => kv(name, format!("✓ {v}{usage}")),
             Err(e) => Line::from(vec![Span::styled(format!(" {name:<10} "), Style::default().fg(DIM)), Span::styled(format!("✗ {e}"), Style::default().fg(ORANGE))]),
         });
     }

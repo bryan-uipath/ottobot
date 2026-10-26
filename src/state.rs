@@ -31,6 +31,8 @@ pub struct AppState {
     pub next_tick: Option<DateTime<Local>>,
     pub caffeinated: bool,
     pub runner_health: Vec<(String, Result<String, String>)>,
+    /// Per-runner quota summary, refreshed in the background.
+    pub runner_usage: Vec<(String, Result<String, String>)>,
 }
 
 impl AppState {

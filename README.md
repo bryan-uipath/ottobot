@@ -44,7 +44,7 @@ regression, and write a short triage summary.
 | `name` | skill id, used in run ids and state | file stem |
 | `runner` | `claude` or `codex` | `--runner` or config |
 | `model` | passed to the runner | runner default |
-| `checker_model` | model for agent-evaluated event triggers | sonnet |
+| `checker_model` | model for agent-evaluated event triggers | sonnet (claude); runner default otherwise |
 | `permission_mode` | claude `--permission-mode`; for codex, `bypassPermissions` → no sandbox, anything else → `-s <mode>` | `bypassPermissions` |
 | `trigger.cron` | 5- or 6-field cron | |
 | `trigger.event` | prose condition, compiled to a checker script (see below) | |
@@ -105,7 +105,7 @@ top / follow · `q` quit.
 `runner/` implements `Runner` per agent CLI: `command()`, `parse_line()` into
 normalized `RunEvent`s, `preflight()`, and `usage()`. Usage reports each
 rate-limit window as a percent used so the scheduler can route to whichever
-runner has headroom (not wired yet; shown in the TUI header and `--usage`).
+runner has headroom (not wired yet; TUI header refreshes it every 5m, `--usage` prints it).
 
 | runner | invocation | usage source |
 |---|---|---|
