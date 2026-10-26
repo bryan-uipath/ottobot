@@ -6,6 +6,7 @@ pub mod codex;
 use crate::run::RunEvent;
 use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokio::process::Command;
 
@@ -17,7 +18,7 @@ pub struct Invocation {
 }
 
 /// One rate-limit window, e.g. claude's 5h session or codex's 7d.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageWindow {
     pub label: String,
     pub used_percent: f64,
@@ -45,7 +46,7 @@ impl Usage {
         if self.windows.is_empty() {
             return "no usage data".into();
         }
-        self.windows.iter().map(|w| format!("{} {:.0}%", w.label, w.used_percent)).collect::<Vec<_>>().join(" · ")
+        self.windows.iter().map(|w| format!("{} {:.0}% left", w.label, (100.0 - w.used_percent).max(0.0))).collect::<Vec<_>>().join(" · ")
     }
 }
 

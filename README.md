@@ -5,8 +5,8 @@
 A higher-order coding agent. Point `otto` at a folder of skill markdown files,
 each with a `trigger:` frontmatter. It evaluates triggers on a tick, fires an
 agent run (`claude -p` or `codex exec`) when one is due, and shows
-everything in a terminal UI: skills, upcoming fires, run history, and live
-session output.
+everything in a terminal UI: what's running, recent failures, runner quota,
+upcoming fires, run history, and live session output.
 
 ![otto TUI](docs/otto-tui.png)
 
@@ -100,9 +100,10 @@ otto --usage                each runner's version and quota (claude 5h/7d, codex
 otto --tick 30s --runner claude
 ```
 
-Keys: `tab` pane · `j/k` move · `enter` filter runs by skill / open session ·
-`esc` clear filter · `r` run now · `R` reload · `l` scheduler log · `g/G`
-top / follow · `q` quit.
+Keys: `tab` cycle NOW / ATTENTION / NEXT / session · `j/k` move · `enter` open
+session (on a NEXT skill: its history) · `esc` clear filter · `r` run now ·
+`R` reload · `h` history · `l` scheduler log · `g/G` top / follow · `?` about ·
+`q` quit.
 
 ## Daemon
 
@@ -119,7 +120,7 @@ dir) and `launchctl bootstrap`s it. `--uninstall` boots it out and deletes the
 plist. macOS only.
 
 `otto` connects to the socket first: same root → TUI drives the daemon
-(header shows its pid, or "disconnected · retrying" every 2s); different root
+(status strip shows its pid, or "daemon disconnected · retrying" every 2s); different root
 → prints both and exits 1; no daemon → in-process scheduler as before (exits
 with the TUI). `--run` goes through the daemon when one is up; `--check` is
 always in-process. Locks are `flock`s the kernel drops on exit:
@@ -142,7 +143,7 @@ Wire: newline-delimited JSON, one request → one response, connection reusable.
 `runner/` implements `Runner` per agent CLI: `command()`, `parse_line()` into
 normalized `RunEvent`s, `preflight()`, and `usage()`. Usage reports each
 rate-limit window as a percent used so the scheduler can route to whichever
-runner has headroom (not wired yet; TUI header refreshes it every 5m, `--usage` prints it).
+runner has headroom (not wired yet; TUI QUOTA section refreshes it every 5m, `--usage` prints it).
 
 | runner | invocation | usage source |
 |---|---|---|
@@ -194,8 +195,8 @@ state.rs      shared in-memory state between scheduler and clients
 proto.rs      Snapshot/Status DTOs, socket Request/Response, request handler
 daemon.rs     `otto daemon`: socket server, daemon.json, signals, launchd install
 client.rs     Backend: in-process (Local) or socket (Remote, reconnecting)
-tui/          ratatui over a Backend: header (Otto + status), skills, runs, session/log
-otto.rs       header art from assets/otto.ans
+tui/          ratatui over a Backend: status strip, board rail (now/attention/quota/next) or history, session/log, `?` about
+otto.rs       Otto art (about overlay) from assets/otto.ans
 ```
 
 ## Roadmap

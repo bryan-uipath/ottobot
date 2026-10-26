@@ -231,7 +231,7 @@ async fn status(json: bool) -> Result<()> {
     ];
     for (name, u) in &s.runner_usage {
         parts.push(match u {
-            Ok(u) => format!("{name} {u}"),
+            Ok(w) => format!("{name} {}", runner::Usage { windows: w.clone() }.summary()),
             Err(_) => format!("{name} n/a"),
         });
     }
@@ -243,7 +243,7 @@ async fn status(json: bool) -> Result<()> {
 async fn refresh_usage(shared: state::Shared) {
     loop {
         let usage = tokio::task::spawn_blocking(|| {
-            runner::all().into_iter().map(|r| (r.name().to_string(), r.usage().map(|u| u.summary()).map_err(|e| format!("{e:#}")))).collect::<Vec<_>>()
+            runner::all().into_iter().map(|r| (r.name().to_string(), r.usage().map(|u| u.windows).map_err(|e| format!("{e:#}")))).collect::<Vec<_>>()
         })
         .await
         .unwrap_or_default();
