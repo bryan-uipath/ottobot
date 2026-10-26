@@ -39,6 +39,9 @@ struct Cli {
     /// Run one skill headless (prints events), then exit. Bypasses dedupe/cooldown.
     #[arg(long, value_name = "SKILL")]
     run: Option<String>,
+    /// Print each runner's version and quota usage, then exit.
+    #[arg(long)]
+    usage: bool,
     /// Evaluate one event trigger now (compiles the checker if needed), print the verdict, exit.
     #[arg(long, value_name = "SKILL")]
     check: Option<String>,
@@ -66,6 +69,18 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    if cli.usage {
+        for r in runner::all() {
+            let ver = r.preflight().map_err(|e| format!("{e:#}"));
+            let usage = r.usage().map(|u| u.summary()).unwrap_or_else(|e| format!("usage unavailable: {e:#}"));
+            match ver {
+                Ok(v) => println!("{:<8} ✓ {v:<24} {usage}", r.name()),
+                Err(e) => println!("{:<8} ✗ {e}", r.name()),
+            }
+        }
+        return Ok(());
+    }
+
     if let Some(id) = &cli.show {
         let Some(run) = store.load_runs(usize::MAX).into_iter().find(|r| r.meta.id == *id) else { anyhow::bail!("no run {id}") };
         println!("{}", serde_json::to_string_pretty(&run.meta)?);
@@ -81,7 +96,16 @@ async fn main() -> Result<()> {
 
     let mut app = state::AppState { root: root.clone(), store_dir: store.dir.clone(), ..Default::default() };
     app.runs = store.load_runs(200);
-    app.runner_health = runner::all().into_iter().map(|r| (r.name().to_string(), r.preflight().map_err(|e| format!("{e:#}")))).collect();
+    app.runner_health = runner::all()
+        .into_iter()
+        .map(|r| {
+            let health = r.preflight().map(|v| match r.usage() {
+                Ok(u) => format!("{v} · {}", u.summary()),
+                Err(_) => v,
+            });
+            (r.name().to_string(), health.map_err(|e| format!("{e:#}")))
+        })
+        .collect();
     let mut caff = caffeinate::start();
     app.caffeinated = caff.is_some();
     let shared: state::Shared = Arc::new(Mutex::new(app));

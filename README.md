@@ -4,7 +4,7 @@
 
 A higher-order coding agent. Point `otto` at a folder of skill markdown files,
 each with a `trigger:` frontmatter. It evaluates triggers on a tick, fires an
-agent run (`claude -p` today; codex/opencode next) when one is due, and shows
+agent run (`claude -p` or `codex exec`) when one is due, and shows
 everything in a terminal UI: skills, upcoming fires, run history, and live
 session output.
 
@@ -42,10 +42,10 @@ regression, and write a short triage summary.
 | key | meaning | default |
 |---|---|---|
 | `name` | skill id, used in run ids and state | file stem |
-| `runner` | `claude` (codex / opencode planned) | `--runner` or config |
+| `runner` | `claude` or `codex` | `--runner` or config |
 | `model` | passed to the runner | runner default |
 | `checker_model` | model for agent-evaluated event triggers | sonnet |
-| `permission_mode` | claude `--permission-mode` | `bypassPermissions` |
+| `permission_mode` | claude `--permission-mode`; for codex, `bypassPermissions` → no sandbox, anything else → `-s <mode>` | `bypassPermissions` |
 | `trigger.cron` | 5- or 6-field cron | |
 | `trigger.event` | prose condition, compiled to a checker script (see below) | |
 | `trigger.check_every` | event poll interval | 5m |
@@ -92,12 +92,25 @@ otto --list                 discovered skills, hashes, parsed triggers
 otto --run <skill>          one headless run, events to stdout (bypasses dedupe)
 otto --show <run-id>        dump a stored run's metadata and events
 otto --check <skill>        evaluate an event trigger once (compiles the checker if needed)
+otto --usage                each runner's version and quota (claude 5h/7d, codex 7d)
 otto --tick 30s --runner claude
 ```
 
 Keys: `tab` pane · `j/k` move · `enter` filter runs by skill / open session ·
 `esc` clear filter · `r` run now · `R` reload · `l` scheduler log · `g/G`
 top / follow · `q` quit.
+
+## Runners and usage
+
+`runner/` implements `Runner` per agent CLI: `command()`, `parse_line()` into
+normalized `RunEvent`s, `preflight()`, and `usage()`. Usage reports each
+rate-limit window as a percent used so the scheduler can route to whichever
+runner has headroom (not wired yet; shown in the TUI header and `--usage`).
+
+| runner | invocation | usage source |
+|---|---|---|
+| `claude` | `claude -p --output-format stream-json` | `api.anthropic.com/api/oauth/usage` with the Claude Code OAuth token (keychain or `~/.claude/.credentials.json`) |
+| `codex` | `codex exec --json -C <cwd>` | last `rate_limits` in the newest `~/.codex/sessions/**/*.jsonl` rollout |
 
 ## Config and state
 
@@ -138,7 +151,7 @@ skill.rs      discover *.md with trigger frontmatter, hash file + trigger block
 trigger.rs    cron via croner; event spec parsing
 checker.rs    event checks: compile prose → script, run it, agent fallback
 scheduler.rs  tick loop, dedupe gate, spawn + stream runs
-runner/       Runner trait: command() + parse_line() -> RunEvent; claude impl
+runner/       Runner trait: command(), parse_line() -> RunEvent, preflight(), usage(); claude + codex
 store.rs      ~/.ottobot/projects/<root>/ state, run metadata, event logs
 state.rs      shared in-memory state between scheduler and TUI
 tui/          ratatui: header (Otto + status), skills, runs, session/log
@@ -150,7 +163,8 @@ otto.rs       header art from assets/otto.ans
 1. ✅ discovery, hashing, cron triggers, claude runner, TUI, caffeinate, config
 2. ✅ event triggers: compile prose → checker script via sonnet, agent fallback, dedupe key from checker output
 3. `env.repo`: fetch, worktree per run on `ottobot/<skill>/<run-id>`, worktree removed after, branch kept
-4. codex / opencode runners, per-runner preflight
+4. ✅ codex runner, per-runner preflight + usage
+4b. route by usage: pick runner/model with headroom when a skill allows alternatives
 5. headless daemon + `otto status`
 
 ## Otto art
