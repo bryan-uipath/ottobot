@@ -4,7 +4,7 @@ use crate::client::{socket_path, Conn};
 use crate::proto::{self, Request, Response};
 use crate::scheduler::Command;
 use crate::state::Shared;
-use crate::store::Store;
+use crate::store::{FileLock, Store};
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -19,34 +19,39 @@ fn info_path() -> Result<PathBuf> {
     Ok(crate::config::home()?.join("daemon.json"))
 }
 
-/// Run in the foreground until SIGINT/SIGTERM. Refuses if another daemon answers on the socket.
+/// Run in the foreground until SIGINT/SIGTERM. Lock order: daemon.lock → scheduler.pid → socket,
+/// so a second daemon can never unlink a live one's socket or double-schedule.
 pub async fn serve(root: PathBuf, store: Store, tick: Duration, default_runner: String) -> Result<()> {
+    let mut term = signal(SignalKind::terminate())?;
+    let mut int = signal(SignalKind::interrupt())?;
+    let home = crate::config::home()?;
+    // Socket and lock live here; owner-only so no other local user can connect.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700))?;
+    }
     let sock = socket_path()?;
-    if let Ok(mut c) = Conn::connect(&sock).await {
-        if let Ok(s) = c.status().await {
-            eprintln!("otto daemon already running: pid {} · {}", s.pid, s.root.display());
+    let _daemon_lock = match FileLock::acquire(&home.join("daemon.lock")) {
+        Ok(l) => l,
+        Err(e) => {
+            match Conn::probe(&sock).await {
+                Ok((_, s)) => eprintln!("otto daemon already running: pid {} · {}", s.pid, s.root.display()),
+                Err(_) => eprintln!("otto daemon already starting: {e:#}"),
+            }
             std::process::exit(1);
         }
-    }
-    // Nothing answered: leftover from a crash.
+    };
+    let sched_lock = store.lock_scheduler()?;
+    // We hold the daemon lock, so whatever is at the socket path is a leftover.
     let _ = std::fs::remove_file(&sock);
     let listener = UnixListener::bind(&sock).with_context(|| format!("bind {}", sock.display()))?;
-    // Socket can trigger agent runs; owner only.
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))?;
     }
-    // Start scheduling only once the socket is ours.
-    let core = match crate::start_core(root.clone(), store, tick, default_runner) {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = std::fs::remove_file(&sock);
-            return Err(e);
-        }
-    };
-    let crate::Core { shared, cmds, mut caff, _lock } = core;
+    let core = crate::start_core(root.clone(), store, tick, default_runner, sched_lock);
     {
-        let mut st = shared.lock().unwrap();
+        let mut st = core.shared.lock().unwrap();
         st.daemon_pid = Some(std::process::id());
         st.log(format!("daemon listening on {}", sock.display()));
     }
@@ -54,12 +59,10 @@ pub async fn serve(root: PathBuf, store: Store, tick: Duration, default_runner: 
     std::fs::write(info_path()?, serde_json::to_string_pretty(&info)?)?;
     println!("otto daemon pid {} · {} · {}", std::process::id(), root.display(), sock.display());
 
-    let mut term = signal(SignalKind::terminate())?;
-    let mut int = signal(SignalKind::interrupt())?;
     let res = loop {
         tokio::select! {
             a = listener.accept() => match a {
-                Ok((stream, _)) => { tokio::spawn(serve_conn(stream, shared.clone(), cmds.clone())); }
+                Ok((stream, _)) => { tokio::spawn(serve_conn(stream, core.shared.clone(), core.cmds.clone())); }
                 Err(e) => break Err(anyhow::Error::from(e).context("accept")),
             },
             _ = term.recv() => break Ok(()),
@@ -68,15 +71,18 @@ pub async fn serve(root: PathBuf, store: Store, tick: Duration, default_runner: 
     };
     let _ = std::fs::remove_file(&sock);
     let _ = std::fs::remove_file(info_path()?);
-    if let Some(c) = caff.as_mut() {
-        let _ = c.kill();
-    }
+    drop(core); // kills caffeinate, releases scheduler lock
     tracing::info!("daemon stopped");
     res
 }
 
 /// One client: request lines in, response lines out, until EOF.
 async fn serve_conn(stream: UnixStream, shared: Shared, cmds: mpsc::Sender<Command>) {
+    // Second layer behind the 0600 socket: only our own uid may trigger runs.
+    match stream.peer_cred() {
+        Ok(c) if c.uid() == unsafe { libc::getuid() } => {}
+        _ => return,
+    }
     let (r, mut w) = stream.into_split();
     let mut lines = BufReader::new(r).lines();
     while let Ok(Some(line)) = lines.next_line().await {
@@ -105,6 +111,17 @@ fn uid() -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+fn require_macos(verb: &str) {
+    if !cfg!(target_os = "macos") {
+        eprintln!("{verb} is macOS-only");
+        std::process::exit(1);
+    }
+}
+
+fn target(uid: &str) -> String {
+    format!("gui/{uid}/{LABEL}")
+}
+
 fn launchctl(args: &[&str]) -> Result<()> {
     let st = std::process::Command::new("launchctl").args(args).status().context("launchctl")?;
     if !st.success() {
@@ -114,11 +131,8 @@ fn launchctl(args: &[&str]) -> Result<()> {
 }
 
 /// Write the LaunchAgent plist and bootstrap it. Logs go to the store dir.
-pub fn install(root: &Path, store_dir: &Path) -> Result<()> {
-    if !cfg!(target_os = "macos") {
-        eprintln!("install is macOS-only");
-        std::process::exit(1);
-    }
+pub fn install(root: &Path, store_dir: &Path, extra_args: &[String]) -> Result<()> {
+    require_macos("install");
     let exe = std::env::current_exe()?.canonicalize()?;
     let path = std::env::var("PATH").unwrap_or_default();
     let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
@@ -132,7 +146,7 @@ pub fn install(root: &Path, store_dir: &Path) -> Result<()> {
   <array>
     <string>{exe}</string>
     <string>daemon</string>
-    <string>{root}</string>
+    <string>{root}</string>{extra}
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -147,6 +161,7 @@ pub fn install(root: &Path, store_dir: &Path) -> Result<()> {
 "#,
         exe = esc(&exe.to_string_lossy()),
         root = esc(&root.to_string_lossy()),
+        extra = extra_args.iter().map(|a| format!("\n    <string>{}</string>", esc(a))).collect::<String>(),
         out = esc(&store_dir.join("daemon.out.log").to_string_lossy()),
         err = esc(&store_dir.join("daemon.err.log").to_string_lossy()),
         path = esc(&path),
@@ -158,7 +173,7 @@ pub fn install(root: &Path, store_dir: &Path) -> Result<()> {
     let uid = uid()?;
     // Re-install: unload the old definition first; failure just means it wasn't loaded.
     if p.exists() {
-        let _ = std::process::Command::new("launchctl").args(["bootout", &format!("gui/{uid}/{LABEL}")]).status();
+        let _ = launchctl(&["bootout", &target(&uid)]);
     }
     std::fs::write(&p, plist)?;
     println!("wrote {}", p.display());
@@ -168,12 +183,9 @@ pub fn install(root: &Path, store_dir: &Path) -> Result<()> {
 }
 
 pub fn uninstall() -> Result<()> {
-    if !cfg!(target_os = "macos") {
-        eprintln!("install is macOS-only");
-        std::process::exit(1);
-    }
+    require_macos("uninstall");
     let uid = uid()?;
-    match launchctl(&["bootout", &format!("gui/{uid}/{LABEL}")]) {
+    match launchctl(&["bootout", &target(&uid)]) {
         Ok(()) => println!("unloaded {LABEL} (gui/{uid})"),
         Err(e) => eprintln!("{e:#} (not loaded?)"),
     }

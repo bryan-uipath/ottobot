@@ -45,18 +45,8 @@ impl Store {
     }
 
     /// One scheduler per store: a daemon and an in-process TUI on the same root would double-fire.
-    /// Pid file, checked with `kill -0` so a crash never leaves a permanent lock.
-    pub fn lock_scheduler(&self) -> Result<SchedulerLock> {
-        let path = self.dir.join("scheduler.pid");
-        if let Some(pid) = fs::read_to_string(&path).ok().and_then(|s| s.trim().parse::<u32>().ok()) {
-            let alive = pid != std::process::id()
-                && std::process::Command::new("kill").args(["-0", &pid.to_string()]).status().map(|s| s.success()).unwrap_or(false);
-            if alive {
-                anyhow::bail!("scheduler already running for this root (pid {pid}); use the TUI as a client or stop it");
-            }
-        }
-        fs::write(&path, std::process::id().to_string())?;
-        Ok(SchedulerLock { path })
+    pub fn lock_scheduler(&self) -> Result<FileLock> {
+        FileLock::acquire(&self.dir.join("scheduler.pid")).map_err(|e| anyhow::anyhow!("{e:#}; use the TUI as a client or stop it"))
     }
 
     pub fn load_state(&self) -> State {
@@ -104,12 +94,25 @@ impl Store {
     }
 }
 
-pub struct SchedulerLock {
-    path: PathBuf,
+/// Exclusive `flock` held for the process lifetime; the kernel releases it on any exit,
+/// so a crash never leaves a stale lock and two starters can't both win.
+pub struct FileLock {
+    _file: fs::File,
 }
 
-impl Drop for SchedulerLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+impl FileLock {
+    pub fn acquire(path: &Path) -> Result<Self> {
+        use std::os::unix::io::AsRawFd;
+        let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
+        // SAFETY: valid open fd; flock has no memory-safety preconditions.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let holder = fs::read_to_string(path).unwrap_or_default();
+            anyhow::bail!("{} is held by pid {}", path.display(), holder.trim());
+        }
+        // Pid is informational only; the flock is the lock.
+        let mut f = &file;
+        let _ = f.set_len(0);
+        let _ = write!(f, "{}", std::process::id());
+        Ok(Self { _file: file })
     }
 }

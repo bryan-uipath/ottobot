@@ -121,9 +121,11 @@ plist. macOS only.
 `otto` connects to the socket first: same root → TUI drives the daemon
 (header shows its pid, or "disconnected · retrying" every 2s); different root
 → prints both and exits 1; no daemon → in-process scheduler as before (exits
-with the TUI). `--run`/`--check` are always in-process. One scheduler per
-store: `<store>/scheduler.pid` (liveness via `kill -0`) makes a second one,
-daemon or in-process, refuse to start.
+with the TUI). `--run` goes through the daemon when one is up; `--check` is
+always in-process. Locks are `flock`s the kernel drops on exit:
+`~/.ottobot/daemon.lock` (one daemon per machine) and `<store>/scheduler.pid`
+(one scheduler per root, daemon or in-process). `--install` forwards explicit
+`--tick`/`--runner`.
 
 Wire: newline-delimited JSON, one request → one response, connection reusable.
 

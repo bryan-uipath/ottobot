@@ -76,9 +76,17 @@ enum Cmd {
 pub struct Core {
     pub shared: state::Shared,
     pub cmds: tokio::sync::mpsc::Sender<scheduler::Command>,
-    pub caff: Option<std::process::Child>,
+    caff: Option<std::process::Child>,
     /// Released on drop; keep it alive as long as the scheduler runs.
-    pub _lock: store::SchedulerLock,
+    _lock: store::FileLock,
+}
+
+impl Drop for Core {
+    fn drop(&mut self) {
+        if let Some(c) = self.caff.as_mut() {
+            let _ = c.kill();
+        }
+    }
 }
 
 #[tokio::main]
@@ -111,7 +119,15 @@ async fn main() -> Result<()> {
     let default_runner = cli.runner.clone().or(cfg.runner.clone()).unwrap_or_else(|| "claude".into());
     let store = store::Store::open(&root)?;
     if let Some(Cmd::Daemon { install: true, .. }) = &cli.cmd {
-        return daemon::install(&root, &store.dir);
+        // Forward explicit overrides; the agent otherwise runs with config/defaults.
+        let mut extra = vec![];
+        if let Some(t) = cli.tick {
+            extra.extend(["--tick".to_string(), humantime::format_duration(t).to_string()]);
+        }
+        if let Some(r) = &cli.runner {
+            extra.extend(["--runner".to_string(), r.clone()]);
+        }
+        return daemon::install(&root, &store.dir, &extra);
     }
     init_logging(&store.dir)?;
     if let Some(Cmd::Daemon { .. }) = &cli.cmd {
@@ -143,29 +159,30 @@ async fn main() -> Result<()> {
         return check_once(&root, &store, &default_runner, name).await;
     }
 
-    // TUI prefers a running daemon; --run stays in-process.
-    if cli.run.is_none() {
-        if let Some(backend) = connect_daemon(&root).await? {
-            return tui::run(backend).await;
+    // A running daemon owns the scheduler: TUI and --run both go through it.
+    if let Some(backend) = connect_daemon(&root).await? {
+        if cli.tick.is_some() || cli.runner.is_some() {
+            eprintln!("note: --tick/--runner are ignored while attached to a daemon");
         }
+        return match cli.run {
+            Some(name) => headless(backend, name).await,
+            None => tui::run(backend).await,
+        };
     }
-    let Core { shared, cmds: tx, mut caff, _lock } = start_core(root, store, tick, default_runner)?;
-    let res = match cli.run {
-        Some(name) => headless(shared, tx, name).await,
+    let lock = store.lock_scheduler()?;
+    let core = start_core(root, store, tick, default_runner, lock);
+    let backend = client::Backend::Local { shared: core.shared.clone(), cmds: core.cmds.clone() };
+    match cli.run {
+        Some(name) => headless(backend, name).await,
         None => {
-            shared.lock().unwrap().log("no daemon; running in-process (otto daemon --install to run in background)");
-            tui::run(client::Backend::Local { shared, cmds: tx }).await
+            core.shared.lock().unwrap().log("no daemon; running in-process (otto daemon --install to run in background)");
+            tui::run(backend).await
         }
-    };
-    if let Some(c) = caff.as_mut() {
-        let _ = c.kill();
     }
-    res
 }
 
 /// Load runs, preflight runners, caffeinate, and spawn the usage refresher and scheduler.
-pub fn start_core(root: PathBuf, store: store::Store, tick: Duration, default_runner: String) -> Result<Core> {
-    let lock = store.lock_scheduler()?;
+pub fn start_core(root: PathBuf, store: store::Store, tick: Duration, default_runner: String, lock: store::FileLock) -> Core {
     let mut app = state::AppState { root, store_dir: store.dir.clone(), ..Default::default() };
     app.runs = store.load_runs(200);
     app.runner_health = runner::all().into_iter().map(|r| (r.name().to_string(), r.preflight().map_err(|e| format!("{e:#}")))).collect();
@@ -178,14 +195,13 @@ pub fn start_core(root: PathBuf, store: store::Store, tick: Duration, default_ru
     let (tx, rx) = tokio::sync::mpsc::channel(16);
     let sched = scheduler::Scheduler::new(shared.clone(), store, tick, default_runner);
     tokio::spawn(sched.run(rx));
-    Ok(Core { shared, cmds: tx, caff, _lock: lock })
+    Core { shared, cmds: tx, caff, _lock: lock }
 }
 
 /// Remote backend if a daemon answers for `root`. A daemon serving another root is an error, not a fallback.
 async fn connect_daemon(root: &std::path::Path) -> Result<Option<client::Backend>> {
     let path = client::socket_path()?;
-    let Ok(mut conn) = client::Conn::connect(&path).await else { return Ok(None) };
-    let Ok(s) = conn.status().await else { return Ok(None) };
+    let Ok((conn, s)) = client::Conn::probe(&path).await else { return Ok(None) };
     if s.root != root {
         eprintln!("otto daemon (pid {}) serves a different root:\n  daemon: {}\n  wanted: {}", s.pid, s.root.display(), root.display());
         std::process::exit(1);
@@ -195,12 +211,8 @@ async fn connect_daemon(root: &std::path::Path) -> Result<Option<client::Backend
 
 /// `otto status`: one line (or JSON) from the daemon.
 async fn status(json: bool) -> Result<()> {
-    let s = match client::Conn::connect(&client::socket_path()?).await {
-        Ok(mut c) => c.status().await,
-        Err(e) => Err(e),
-    };
-    let s = match s {
-        Ok(s) => s,
+    let s = match client::Conn::probe(&client::socket_path()?).await {
+        Ok((_, s)) => s,
         Err(_) => {
             eprintln!("no daemon");
             std::process::exit(1);
@@ -240,25 +252,36 @@ async fn refresh_usage(shared: state::Shared) {
     }
 }
 
-/// Fire one skill and stream its events to stdout until it finishes.
-async fn headless(shared: state::Shared, tx: tokio::sync::mpsc::Sender<scheduler::Command>, name: String) -> Result<()> {
-    tx.send(scheduler::Command::RunNow(name.clone())).await?;
-    let mut printed = 0;
+/// Fire one skill and stream its events to stdout until it finishes. Works against either backend.
+async fn headless(mut backend: client::Backend, name: String) -> Result<()> {
+    // In-process, the scheduler's first reload races us; wait for skills to appear.
     let mut logged = 0;
+    for _ in 0..25 {
+        let snap = backend.snapshot().await?;
+        logged = snap.log.len();
+        if !snap.skills.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    // Tolerate clock skew between client and daemon when matching the run we asked for.
+    let asked = chrono::Local::now() - chrono::Duration::seconds(2);
+    backend.run_now(&name).await?;
+    let mut printed = 0;
     loop {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        let st = shared.lock().unwrap();
-        for (_, m) in st.log.iter().skip(logged) {
+        let snap = backend.snapshot().await?;
+        for (_, m) in snap.log.iter().skip(logged) {
             eprintln!("[ottobot] {m}");
         }
-        logged = st.log.len();
-        let Some(run) = st.runs.iter().find(|r| r.meta.skill == name) else { continue };
-        for e in run.events.iter().skip(printed) {
+        logged = snap.log.len();
+        let Some(run) = snap.runs.iter().filter(|r| r.skill == name && r.started_at >= asked).max_by_key(|r| r.started_at) else { continue };
+        for e in backend.events(&run.id, printed).await? {
             println!("{e:?}");
+            printed += 1;
         }
-        printed = run.events.len();
-        if run.meta.status != run::RunStatus::Running {
-            println!("status: {:?}", run.meta.status);
+        if run.status != run::RunStatus::Running {
+            println!("status: {:?}", run.status);
             return Ok(());
         }
     }

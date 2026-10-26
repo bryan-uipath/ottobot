@@ -38,6 +38,8 @@ pub struct Model {
     pub events: HashMap<String, Vec<RunEvent>>,
     /// Backend error from the last refresh ("daemon disconnected: …"). Last snapshot stays on screen.
     pub error: Option<String>,
+    /// Error from `r`/`R`, kept for a few seconds so a successful refresh doesn't erase it.
+    pub action_error: Option<(std::time::Instant, String)>,
 }
 
 pub async fn run(mut backend: Backend) -> Result<()> {
@@ -47,6 +49,9 @@ pub async fn run(mut backend: Backend) -> Result<()> {
     let res = loop {
         ui.frame = ui.frame.wrapping_add(1);
         refresh(&mut backend, &mut m, &ui).await;
+        if m.action_error.as_ref().is_some_and(|(t, _)| t.elapsed() > Duration::from_secs(5)) {
+            m.action_error = None;
+        }
         if let Err(e) = term.draw(|f| ui::draw(f, &m, &mut ui)) {
             break Err(e.into());
         }
@@ -151,7 +156,7 @@ async fn handle_key(code: KeyCode, ui: &mut Ui, m: &mut Model, backend: &mut Bac
             let name = m.snap.skills.get(ui.skill_idx).map(|v| v.name.clone());
             if let Some(name) = name {
                 if let Err(e) = backend.run_now(&name).await {
-                    m.error = Some(format!("{e:#}"));
+                    m.action_error = Some((std::time::Instant::now(), format!("{e:#}")));
                 }
                 ui.run_idx = 0;
                 ui.follow = true;
@@ -159,7 +164,7 @@ async fn handle_key(code: KeyCode, ui: &mut Ui, m: &mut Model, backend: &mut Bac
         }
         KeyCode::Char('R') => {
             if let Err(e) = backend.reload().await {
-                m.error = Some(format!("{e:#}"));
+                m.action_error = Some((std::time::Instant::now(), format!("{e:#}")));
             }
         }
         KeyCode::Char('l') => ui.show_log = !ui.show_log,

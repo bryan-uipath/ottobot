@@ -24,7 +24,9 @@ fn spin(frame: usize) -> &'static str {
 pub fn draw(f: &mut Frame, m: &Model, ui: &mut Ui) {
     let st = &m.snap;
     let area = f.area();
-    let header_h = otto::height().min(area.height / 3).max(6) + 1;
+    // Fit every info line (7 fixed + daemon/error + one per runner), bounded by the art and terminal.
+    let info_lines = 7 + 1 + m.snap.runner_health.len() as u16 + m.action_error.is_some() as u16;
+    let header_h = otto::height().max(info_lines).min(area.height / 2).max(6) + 1;
     let [header, body, footer] =
         Layout::vertical([Constraint::Length(header_h), Constraint::Min(5), Constraint::Length(1)]).areas(area);
     draw_header(f, m, ui, header);
@@ -60,9 +62,13 @@ fn draw_header(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
     ];
     // Daemon line only in remote mode; in-process header is unchanged.
     match (&m.error, st.daemon_pid) {
-        (Some(e), _) => lines.push(Line::from(vec![Span::styled(format!(" {:<10} ", "daemon"), Style::default().fg(DIM)), Span::styled(format!("✗ {e} · retrying"), Style::default().fg(ORANGE))])),
+        (Some(e), Some(_)) => lines.push(err_line("daemon", &format!("{e} · retrying"))),
+        (Some(e), None) => lines.push(err_line("error", e)),
         (None, Some(pid)) => lines.push(kv("daemon", format!("pid {pid}"))),
         (None, None) => {}
+    }
+    if let Some((_, e)) = &m.action_error {
+        lines.push(err_line("error", e));
     }
     for (name, h) in &st.runner_health {
         let usage = match st.runner_usage.iter().find(|(n, _)| n == name) {
@@ -71,10 +77,14 @@ fn draw_header(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
         };
         lines.push(match h {
             Ok(v) => kv(name, format!("✓ {v}{usage}")),
-            Err(e) => Line::from(vec![Span::styled(format!(" {name:<10} "), Style::default().fg(DIM)), Span::styled(format!("✗ {e}"), Style::default().fg(ORANGE))]),
+            Err(e) => err_line(name, e),
         });
     }
     f.render_widget(Paragraph::new(lines), info);
+}
+
+fn err_line(k: &str, v: &str) -> Line<'static> {
+    Line::from(vec![Span::styled(format!(" {k:<10} "), Style::default().fg(DIM)), Span::styled(format!("✗ {v}"), Style::default().fg(ORANGE))])
 }
 
 fn kv(k: &str, v: String) -> Line<'static> {

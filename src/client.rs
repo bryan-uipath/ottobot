@@ -12,7 +12,8 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+// Short: the TUI blocks on each request, so a stalled daemon must not eat keypresses.
+const REQUEST_TIMEOUT: Duration = Duration::from_millis(1500);
 const RECONNECT_EVERY: Duration = Duration::from_secs(2);
 
 pub fn socket_path() -> Result<PathBuf> {
@@ -44,6 +45,13 @@ impl Conn {
             Ok(serde_json::from_str(&buf)?)
         };
         tokio::time::timeout(REQUEST_TIMEOUT, io).await.context("daemon timed out")?
+    }
+
+    /// Connect and ask who is there. Any failure means "no usable daemon".
+    pub async fn probe(path: &Path) -> Result<(Self, Status)> {
+        let mut c = Self::connect(path).await?;
+        let s = c.status().await?;
+        Ok((c, s))
     }
 
     pub async fn status(&mut self) -> Result<Status> {
@@ -82,8 +90,7 @@ impl Backend {
                         bail!("daemon disconnected");
                     }
                     r.last_try = Instant::now();
-                    let mut c = Conn::connect(&r.path).await.context("daemon disconnected")?;
-                    let s = c.status().await.context("daemon disconnected")?;
+                    let (c, s) = Conn::probe(&r.path).await.context("daemon disconnected")?;
                     if s.root != r.root {
                         bail!("daemon now serves {} (wanted {})", s.root.display(), r.root.display());
                     }
