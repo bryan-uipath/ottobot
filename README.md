@@ -141,6 +141,13 @@ Wire: newline-delimited JSON, one request → one response, connection reusable.
 {"type":"Status"}                           → {"type":"Status","data":{root, pid, running, skills, last_failure, next_fire, runner_usage}}
 ```
 
+## Tray
+
+`tray/` is a macOS menu-bar app (Tauri v2): tooltip with running/failed counts,
+a popover with the same NOW / ATTENTION / QUOTA / NEXT board, and Run now /
+Reload / Open TUI from its menu. It is a socket client only, so it needs the
+daemon. Build: `cd tray/src-tauri && cargo tauri build`. See `tray/README.md`.
+
 ## Runners and usage
 
 `runner/` implements `Runner` per agent CLI: `command()`, `parse_line()` into
@@ -200,6 +207,7 @@ daemon.rs     `otto daemon`: socket server, daemon.json, signals, launchd instal
 client.rs     Backend: in-process (Local) or socket (Remote, reconnecting)
 tui/          ratatui over a Backend: status strip, board rail (now/attention/quota/next) or history, session/log, `?` about
 otto.rs       Otto art (about overlay) from assets/otto.ans
+tray/         macOS menu-bar client (Tauri v2, static HTML popover) over the daemon socket
 ```
 
 ## Roadmap
@@ -210,6 +218,7 @@ otto.rs       Otto art (about overlay) from assets/otto.ans
 4. ✅ codex runner, per-runner preflight + usage
 4b. route by usage: pick runner/model with headroom when a skill allows alternatives
 5. ✅ headless daemon + `otto status`
+6. ✅ macOS menu-bar tray (daemon client)
 
 ## Otto art
 

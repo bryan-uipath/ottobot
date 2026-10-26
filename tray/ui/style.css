@@ -1,0 +1,106 @@
+/* Tokens: flow-presentation future-dark (default) + light, verbatim from src/styles/tokens.css. */
+:root {
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, monospace;
+
+  /* dark (default / "future-dark") */
+  --bg: #131a20;
+  --bg-1: #182027;
+  --bg-2: #273139;
+  --bg-3: #374652;
+  --bg-hover: #cfd8dd14;
+  --fg: #f4f5f7;
+  --fg-emp: #f8f9fa;
+  --fg-de: #cfd8dd;
+  --fg-light: #a4b1b8;
+  --border: #33414c;
+  --border-emp: #526069;
+  --grid-dot: #29343d;
+
+  --brand: #66adff;
+  --brand-2: #87bfff;
+  --brand-dim: #17324f;
+  --alt: #ff5c8a;
+  --alt-2: #ff85a8;
+  --alt-dim: #47202f;
+  --accent: #ff8f70;      /* warm highlight */
+
+  --ok: #74c94b;
+  --warn: #f5a623;
+  --err: #ff8484;
+
+  --shadow-1: 0 1px 2px #0006;
+  --shadow-2: 0 8px 24px -6px #000a, 0 2px 6px -2px #0008;
+  --shadow-3: 0 24px 60px -12px #000c, 0 8px 20px -6px #000a;
+  --radius: 12px;
+  --radius-s: 8px;
+  --maxw: 1080px;
+}
+:root[data-theme="light"] {
+  --bg: #eef1f4;
+  --bg-1: #f6f8fa;
+  --bg-2: #ffffff;
+  --bg-3: #e6ecf1;
+  --bg-hover: #1820270a;
+  --fg: #1b2830;
+  --fg-emp: #0d1519;
+  --fg-de: #3d4d57;
+  --fg-light: #5b6b75;
+  --border: #d3dce2;
+  --border-emp: #b4c0c9;
+  --grid-dot: #d0dae1;
+  --brand: #0067df;
+  --brand-2: #0b57b8;
+  --brand-dim: #d3e5fb;
+  --alt: #d6336c;
+  --alt-2: #b02458;
+  --alt-dim: #fbdce7;
+  --accent: #d9603f;
+  --ok: #3f9e2b;
+  --warn: #b9791a;
+  --err: #d64545;
+  --shadow-1: 0 1px 2px #0d151910;
+  --shadow-2: 0 10px 26px -8px #23303a2e, 0 2px 6px -2px #23303a22;
+  --shadow-3: 0 26px 64px -14px #23303a40, 0 8px 20px -6px #23303a2e;
+}
+
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; background: transparent; overflow: hidden; }
+body { font: 13px/1.4 var(--font-sans); color: var(--fg); padding: 10px; -webkit-user-select: none; user-select: none; cursor: default; }
+
+.card { height: 100%; display: flex; flex-direction: column; background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-3); overflow: hidden; }
+.head { display: flex; align-items: baseline; gap: 8px; padding: 14px 16px 10px; border-bottom: 1px solid var(--border); }
+.title { font-weight: 600; color: var(--fg-emp); }
+.de { color: var(--fg-de); }
+.light { color: var(--fg-light); }
+
+.body { flex: 1; overflow-y: auto; padding: 4px 16px 12px; }
+.label { margin: 14px 0 6px; font-size: 11px; font-variant: all-small-caps; letter-spacing: .08em; color: var(--fg-light); }
+.row { display: flex; align-items: center; gap: 8px; min-height: 24px; }
+.row .name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.row .rest { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; color: var(--fg-de); font-variant-numeric: tabular-nums; }
+.none { color: var(--fg-light); min-height: 24px; }
+.sub { color: var(--fg-de); font-size: 12px; margin: -2px 0 4px 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.err { color: var(--err); }
+
+.spin { flex: none; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--brand-dim); border-top-color: var(--brand); animation: spin .9s linear infinite; }
+.dot { flex: none; width: 10px; text-align: center; color: var(--fg-light); }
+.x { flex: none; width: 10px; text-align: center; color: var(--err); }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.quota .name { width: 76px; flex: none; color: var(--fg-de); }
+.bar { flex: 1; height: 6px; border-radius: 3px; background: var(--bg-3); overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--brand); border-radius: 3px; }
+.bar.hot > i { background: var(--err); }
+.quota .rest { flex: none; width: 64px; }
+
+button { font: inherit; color: var(--fg-de); background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-s); padding: 3px 10px; cursor: pointer; }
+button:hover { color: var(--fg); background: var(--bg-3); border-color: var(--border-emp); }
+button:disabled { opacity: .4; cursor: default; }
+.row button { flex: none; padding: 0 8px; font-size: 12px; }
+.foot { display: flex; justify-content: space-between; padding: 10px 16px; border-top: 1px solid var(--border); }
+
+.down { padding: 28px 0; text-align: center; }
+.down .big { color: var(--fg-emp); font-size: 15px; margin-bottom: 6px; }
+.down code { font-family: var(--font-mono); color: var(--brand); }
+.down .why { margin-top: 10px; font-size: 12px; color: var(--fg-light); }
