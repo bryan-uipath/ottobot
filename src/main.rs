@@ -39,6 +39,9 @@ struct Cli {
     /// Run one skill headless (prints events), then exit. Bypasses dedupe/cooldown.
     #[arg(long, value_name = "SKILL")]
     run: Option<String>,
+    /// Print each runner's version and quota usage, then exit.
+    #[arg(long)]
+    usage: bool,
     /// Evaluate one event trigger now (compiles the checker if needed), print the verdict, exit.
     #[arg(long, value_name = "SKILL")]
     check: Option<String>,
@@ -47,6 +50,18 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.usage {
+        for r in runner::all() {
+            let ver = r.preflight().map_err(|e| format!("{e:#}"));
+            let usage = r.usage().map(|u| u.summary()).unwrap_or_else(|e| format!("usage unavailable: {e:#}"));
+            match ver {
+                Ok(v) => println!("{:<8} ✓ {v:<24} {usage}", r.name()),
+                Err(e) => println!("{:<8} ✗ {e}", r.name()),
+            }
+        }
+        return Ok(());
+    }
+
     let cfg = config::load()?;
     let root = config::skills_root(cli.root.clone(), &cfg)?;
     let tick = cli.tick.or(cfg.tick).unwrap_or(Duration::from_secs(60));
@@ -86,6 +101,8 @@ async fn main() -> Result<()> {
     app.caffeinated = caff.is_some();
     let shared: state::Shared = Arc::new(Mutex::new(app));
 
+    tokio::spawn(refresh_usage(shared.clone()));
+
     let (tx, rx) = tokio::sync::mpsc::channel(16);
     let sched = scheduler::Scheduler::new(shared.clone(), store, tick, default_runner);
     tokio::spawn(sched.run(rx));
@@ -98,6 +115,19 @@ async fn main() -> Result<()> {
         let _ = c.kill();
     }
     res
+}
+
+/// Poll runner quota off the UI thread: usage() does network/file IO and may take seconds.
+async fn refresh_usage(shared: state::Shared) {
+    loop {
+        let usage = tokio::task::spawn_blocking(|| {
+            runner::all().into_iter().map(|r| (r.name().to_string(), r.usage().map(|u| u.summary()).map_err(|e| format!("{e:#}")))).collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        shared.lock().unwrap().runner_usage = usage;
+        tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+    }
 }
 
 /// Fire one skill and stream its events to stdout until it finishes.

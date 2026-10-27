@@ -1,6 +1,6 @@
 //! `claude -p --output-format stream-json` runner.
 
-use super::{which, Invocation, Runner};
+use super::{truncate, version, Invocation, Runner, Usage, UsageWindow};
 use crate::run::RunEvent;
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -52,10 +52,62 @@ impl Runner for Claude {
     }
 
     fn preflight(&self) -> Result<String> {
-        which("claude").context("`claude` not on PATH")?;
-        let out = std::process::Command::new("claude").arg("--version").output().context("claude --version")?;
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        version("claude")
     }
+
+    /// OAuth usage endpoint, with the token Claude Code keeps in the keychain (macOS) or ~/.claude/.credentials.json.
+    fn usage(&self) -> Result<Usage> {
+        let token = oauth_token()?;
+        // Auth header goes in via stdin (`-H @-`) so the token never shows up in `ps`.
+        let mut child = std::process::Command::new("curl")
+            .args(["-sS", "--max-time", "10", "-H", "@-", "-H", "anthropic-beta: oauth-2025-04-20"])
+            .arg("https://api.anthropic.com/api/oauth/usage")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .context("curl")?;
+        {
+            use std::io::Write;
+            let mut stdin = child.stdin.take().context("curl stdin")?;
+            writeln!(stdin, "Authorization: Bearer {token}")?;
+        }
+        let out = child.wait_with_output().context("curl")?;
+        let v: Value = serde_json::from_slice(&out.stdout).context("usage response")?;
+        if let Some(e) = v["error"]["message"].as_str() {
+            anyhow::bail!("{e}");
+        }
+        let windows = v["limits"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    // session = rolling 5h, weekly_all = 7d across models; scoped weekly limits are subsets.
+                    .filter(|l| matches!(l["kind"].as_str(), Some("session" | "weekly_all")))
+                    .map(|l| UsageWindow {
+                        label: if l["kind"].as_str() == Some("session") { "5h".into() } else { "7d".into() },
+                        used_percent: l["percent"].as_f64().unwrap_or(0.0),
+                        resets_at: l["resets_at"].as_str().and_then(|s| s.parse().ok()),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(Usage { windows })
+    }
+}
+
+fn oauth_token() -> Result<String> {
+    let raw = match std::fs::read_to_string(dirs::home_dir().context("no home")?.join(".claude/.credentials.json")) {
+        Ok(s) => s,
+        Err(_) => {
+            let out = std::process::Command::new("security").args(["find-generic-password", "-s", "Claude Code-credentials", "-w"]).output().context("keychain")?;
+            if !out.status.success() {
+                anyhow::bail!("no Claude Code credentials in keychain");
+            }
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        }
+    };
+    let v: Value = serde_json::from_str(raw.trim()).context("credentials json")?;
+    v["claudeAiOauth"]["accessToken"].as_str().map(String::from).context("no accessToken")
 }
 
 fn content_events(content: &Value) -> Vec<RunEvent> {
@@ -95,7 +147,3 @@ fn result_text(content: &Value) -> String {
     }
 }
 
-fn truncate(s: &str, n: usize) -> String {
-    let s = s.trim().replace('\n', " ⏎ ");
-    if s.chars().count() <= n { s } else { format!("{}…", s.chars().take(n).collect::<String>()) }
-}

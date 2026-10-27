@@ -102,7 +102,7 @@ impl Checker {
             path = path.display(),
             body = self.skill.body,
         );
-        let inv = Invocation { prompt, cwd: self.dir.clone(), model: Some(self.checker_model()), permission_mode: self.skill.front.permission_mode.clone() };
+        let inv = Invocation { prompt, cwd: self.dir.clone(), model: self.checker_model(), permission_mode: self.skill.front.permission_mode.clone() };
         let (ok, summary) = run_to_end(&self.runner, inv, AGENT_TIMEOUT).await?;
         if !ok {
             bail!("compile agent failed: {summary}");
@@ -152,7 +152,7 @@ impl Checker {
             desc = self.description,
             body = self.skill.body,
         );
-        let inv = Invocation { prompt, cwd: self.cwd.clone(), model: Some(self.checker_model()), permission_mode: self.skill.front.permission_mode.clone() };
+        let inv = Invocation { prompt, cwd: self.cwd.clone(), model: self.checker_model(), permission_mode: self.skill.front.permission_mode.clone() };
         let (ok, summary) = run_to_end(&self.runner, inv, AGENT_TIMEOUT).await?;
         if !ok {
             bail!("agent check failed: {}", tail(&summary, 300));
@@ -160,8 +160,9 @@ impl Checker {
         parse_result(&summary).with_context(|| format!("agent gave no JSON verdict: {}", tail(&summary, 300)))
     }
 
-    fn checker_model(&self) -> String {
-        self.skill.front.checker_model.clone().unwrap_or_else(|| "sonnet".into())
+    /// `sonnet` is a claude name; other runners use their own default unless configured.
+    fn checker_model(&self) -> Option<String> {
+        self.skill.front.checker_model.clone().or_else(|| (self.runner == "claude").then(|| "sonnet".into()))
     }
 }
 
