@@ -86,7 +86,8 @@ async fn refresh(app: &AppHandle) -> Result<Snapshot> {
 }
 
 fn build_menu(app: &AppHandle, skills: &[String]) -> tauri::Result<Menu<Wry>> {
-    let runs = skills.iter().map(|s| MenuItem::with_id(app, format!("run:{s}"), s, true, None::<&str>)).collect::<tauri::Result<Vec<_>>>()?;
+    let runs =
+        skills.iter().map(|s| MenuItem::with_id(app, format!("run:{s}"), s, true, None::<&str>)).collect::<tauri::Result<Vec<_>>>()?;
     let refs: Vec<&dyn IsMenuItem<Wry>> = runs.iter().map(|m| m as &dyn IsMenuItem<Wry>).collect();
     Menu::with_items(
         app,
@@ -128,7 +129,7 @@ fn toggle(app: &AppHandle, rect: Rect) -> tauri::Result<()> {
     win.set_position(PhysicalPosition::new(x, pos.y + size.height + 4.0 * scale))?;
     // Caret x in CSS px, so it keeps pointing at the icon when the window is clamped at a screen edge.
     let caret = (pos.x + size.width / 2.0 - x) / scale;
-    let _ = win.eval(&format!("document.documentElement.style.setProperty('--caret-x','{caret:.0}px')"));
+    let _ = win.eval(format!("document.documentElement.style.setProperty('--caret-x','{caret:.0}px')"));
     win.show()?;
     win.set_focus()?;
     win.emit("visible", true)

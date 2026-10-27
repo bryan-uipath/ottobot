@@ -6,14 +6,27 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (e.g. v0.2.0); created at the dispatched commit if missing"
+        description: "Existing tag to release (e.g. v0.2.0)"
         required: true
 
 permissions:
   contents: read
 
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
 jobs:
+  # Dispatch: fail before building if the tag doesn't exist.
+  verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: git rev-parse --verify "refs/tags/$TAG^{commit}"
+
   cli:
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -21,16 +34,18 @@ jobs:
           - { os: macos-14, target: aarch64-apple-darwin }
           # macos-13 (Intel) runners are retired; cross-compile x86_64 on arm64.
           - { os: macos-14, target: x86_64-apple-darwin }
-          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          # musl: static binary, no glibc version dependency.
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-musl }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c # v2.9.3
-        with:
-          key: ${{ matrix.target }}
+      - if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo build --release --locked --target ${{ matrix.target }} --bin otto
       - name: Package
         run: |
@@ -46,6 +61,7 @@ jobs:
           path: otto-${{ matrix.target }}.tar.gz
 
   tray:
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -55,18 +71,18 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c # v2.9.3
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
-          workspaces: tray/src-tauri
-          key: tray-${{ matrix.target }}
-      # rust-cache keeps ~/.cargo/bin, so this is a no-op on a warm cache.
-      - run: cargo install tauri-cli --version '^2' --locked
+          tool: cargo-binstall
+      - run: cargo binstall -y --locked tauri-cli@^2
       - run: cargo tauri build --target ${{ matrix.target }}
         working-directory: tray/src-tauri
-      # Unsigned, unnotarized. ditto keeps bundle symlinks/xattrs intact.
+      # Ad-hoc signed (signingIdentity "-"), unnotarized. ditto keeps bundle symlinks/xattrs intact.
       - name: Zip app
         run: |
           ditto -c -k --keepParent \
@@ -92,7 +108,6 @@ jobs:
         run: sha256sum -- * > SHA256SUMS && cat SHA256SUMS
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          tag_name: ${{ inputs.tag || github.ref_name }}
-          target_commitish: ${{ github.sha }}
+          tag_name: ${{ env.TAG }}
           generate_release_notes: true
           files: dist/*

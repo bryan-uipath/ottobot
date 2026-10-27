@@ -17,7 +17,8 @@ curl -fsSL https://raw.githubusercontent.com/bryan-uipath/ottobot/main/install.s
 otto                          # watches ~/.ottobot/skills
 ```
 
-Installs `otto` to `~/.local/bin` (macOS arm64/x86_64, Linux x86_64).
+Installs `otto` to `~/.local/bin` (macOS arm64/x86_64, Linux x86_64 static);
+the one-liner needs the repo to be public.
 `| sh -s -- --tray` also installs the menu-bar app to `~/Applications`;
 `--uninstall` removes both (keeps `~/.ottobot`). Pin with `OTTO_VERSION=v0.2.0`,
 relocate with `OTTO_INSTALL_DIR`, preview with `OTTO_DRY_RUN=1`.
@@ -27,10 +28,10 @@ From source: `cargo install --path .` (to `~/.cargo/bin`).
 Requires `claude` and/or `codex` on `PATH`. macOS runs are kept awake via `caffeinate`.
 `otto daemon --install` keeps the scheduler running without the TUI.
 
-The tray app is unsigned and unnotarized. `install.sh` strips the quarantine
-flag; if you downloaded the zip yourself, run
-`xattr -dr com.apple.quarantine "ottobot tray.app"` or right-click → Open on
-first launch.
+The tray app is ad-hoc signed, not notarized. `install.sh` strips the quarantine
+flag; if you downloaded the zip yourself, allow it on first launch via System
+Settings → Privacy & Security → Open Anyway, or run
+`xattr -dr com.apple.quarantine "ottobot tray.app"`.
 
 ## A skill
 
