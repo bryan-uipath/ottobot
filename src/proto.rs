@@ -3,7 +3,8 @@
 
 use crate::run::{RunEvent, RunMeta, RunStatus};
 use crate::scheduler::Command;
-use crate::state::{AppState, Shared};
+use crate::state::{Alert, AppState, Shared};
+use crate::store::Store;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -26,6 +27,8 @@ pub struct Snapshot {
     /// Set when served by a daemon; None in-process.
     pub daemon_pid: Option<u32>,
     pub power: Option<crate::power::Power>,
+    /// Undismissed critical/immediate alerts; age = now - `first_seen`.
+    pub alerts: Vec<Alert>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +74,11 @@ pub enum Request {
     },
     Reload,
     Status,
+    /// Hide alert (skill, incident key) until a higher level arrives.
+    Dismiss {
+        skill: String,
+        key: String,
+    },
 }
 
 /// e.g. `{"type":"Ok"}`, `{"type":"Status","data":{...}}`.
@@ -114,6 +122,8 @@ impl AppState {
             runner_usage: self.runner_usage.clone(),
             daemon_pid: self.daemon_pid,
             power: self.power.clone(),
+            // `normal` is never stored, so undismissed = active.
+            alerts: self.alerts.iter().filter(|a| a.dismissed_level.is_none()).cloned().collect(),
         }
     }
 
@@ -152,6 +162,16 @@ pub async fn handle(shared: &Shared, cmds: &mpsc::Sender<Command>, req: Request)
             Command::RunNow(skill)
         }
         Request::Reload => Command::Reload,
+        Request::Dismiss { skill, key } => {
+            let mut st = shared.lock().unwrap();
+            if !st.dismiss(&skill, &key) {
+                return Response::Error(format!("no alert {skill}/{key}"));
+            }
+            return match (Store { dir: st.store_dir.clone() }).save_alerts(&st.alerts) {
+                Ok(()) => Response::Ok,
+                Err(e) => Response::Error(format!("save alerts: {e:#}")),
+            };
+        }
     };
     match cmds.send(cmd).await {
         Ok(()) => Response::Ok,
@@ -168,6 +188,8 @@ mod tests {
         let r: Request = serde_json::from_str(r#"{"type":"Events","run":"x","from":3}"#).unwrap();
         assert!(matches!(r, Request::Events { ref run, from: 3 } if run == "x"));
         assert!(matches!(serde_json::from_str::<Request>(r#"{"type":"Status"}"#).unwrap(), Request::Status));
+        let d: Request = serde_json::from_str(r#"{"type":"Dismiss","skill":"s","key":"k"}"#).unwrap();
+        assert!(matches!(d, Request::Dismiss { ref skill, ref key } if skill == "s" && key == "k"));
         assert_eq!(serde_json::to_string(&Response::Ok).unwrap(), r#"{"type":"Ok"}"#);
         assert_eq!(
             serde_json::to_string(&Response::Events(vec![RunEvent::Text("hi".into())])).unwrap(),

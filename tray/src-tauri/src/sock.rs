@@ -44,7 +44,7 @@ pub struct RunMeta {
     pub verdict: Option<Verdict>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum Level {
     Normal,
@@ -112,6 +112,20 @@ pub struct Snapshot {
     pub store_dir: PathBuf,
     #[serde(default)]
     pub power: Option<Power>,
+    /// Active (undismissed) critical/immediate alerts.
+    #[serde(default)]
+    pub alerts: Vec<Alert>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Alert {
+    pub skill: String,
+    pub key: String,
+    pub level: Level,
+    pub headline: String,
+    pub summary: String,
+    pub report: Option<PathBuf>,
+    pub first_seen: DateTime<Local>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +134,7 @@ pub enum Request {
     Snapshot,
     RunNow { skill: String },
     Reload,
+    Dismiss { skill: String, key: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +186,8 @@ mod tests {
             "runner_health":[["claude",{"Ok":"2.1"}]],
             "runner_usage":[["claude",{"Ok":[{"label":"5h","used_percent":37.0,"resets_at":null}]}],["codex",{"Err":"no sessions"}]]}}"#;
         assert!(matches!(serde_json::from_str(s).unwrap(), Response::Snapshot(Snapshot { daemon_pid: Some(1), .. })));
+        let d = Request::Dismiss { skill: "s".into(), key: "k".into() };
+        assert_eq!(serde_json::to_string(&d).unwrap(), r#"{"type":"Dismiss","skill":"s","key":"k"}"#);
     }
 
     #[test]

@@ -209,6 +209,7 @@ pub fn start_core(
 ) -> Core {
     let mut app = state::AppState { root, store_dir: store.dir.clone(), ..Default::default() };
     app.runs = store.load_runs(200);
+    app.alerts = store.load_alerts();
     app.runner_health = runner::all().into_iter().map(|r| (r.name().to_string(), r.preflight().map_err(|e| format!("{e:#}")))).collect();
     let caff = caffeinate::start();
     app.caffeinated = caff.is_some();

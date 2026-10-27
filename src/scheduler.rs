@@ -326,6 +326,10 @@ impl Scheduler {
                 // Whatever happened (incl. timeout), a report on disk counts; else a stub, so every run has one.
                 store.finalize_report(&mut r.meta);
                 let _ = store.save_run_meta(&r.meta);
+                let meta = r.meta.clone();
+                if sh.record_verdict(&meta) {
+                    let _ = store.save_alerts(&sh.alerts);
+                }
             }
             sh.log(format!("run {id}: {status:?}"));
         });

@@ -66,6 +66,23 @@ function render(st) {
   $('who').classList.toggle('warn', !!st.power && !st.power.on_ac);
   const out = [];
 
+  // Worst first, then newest. Verdict text is LLM-written from untrusted telemetry: textContent only (el).
+  const rank = { immediate: 2, critical: 1 };
+  const alerts = [...st.alerts].sort((a, b) => rank[b.level] - rank[a.level] || Date.parse(b.first_seen) - Date.parse(a.first_seen));
+  if (alerts.length) out.push(el('div', 'label', 'alerts'));
+  for (const a of alerts) {
+    const extra = [];
+    if (a.report) {
+      const rep = el('span', 'report', 'report ↗');
+      clickable(rep, a.report);
+      extra.push(rep);
+    }
+    const btn = el('button', null, 'dismiss');
+    btn.onclick = () => invoke('dismiss', { skill: a.skill, key: a.key }).then(refresh, refresh);
+    out.push(row(el('span', `lvl ${a.level}`, '●'), a.skill, `${short(now - Date.parse(a.first_seen))} ago`, ...extra, btn));
+    out.push(el('div', 'alert', null, el('div', 'hl', a.headline), a.summary ? el('div', 'sm', a.summary) : ''));
+  }
+
   out.push(el('div', 'label', 'now'));
   const running = st.runs.filter((r) => r.status === 'Running');
   if (!running.length) out.push(none());
