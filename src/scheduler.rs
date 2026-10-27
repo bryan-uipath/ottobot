@@ -330,7 +330,7 @@ impl Scheduler {
                 let _ = store.save_run_meta(&r.meta);
                 let meta = r.meta.clone();
                 if sh.record_verdict(&meta) {
-                    if let Err(e) = store.save_alerts(&sh.alerts) {
+                    if let Err(e) = store.save_alerts(&sh) {
                         sh.log(format!("save alerts: {e:#}"));
                     }
                 }

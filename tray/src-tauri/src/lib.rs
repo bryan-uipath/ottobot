@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, Rect, State, WindowEvent, Wry};
+use tauri_plugin_notification::NotificationExt;
 
 const TRAY: &str = "main";
 const POPOVER: &str = "popover";
@@ -138,7 +139,10 @@ fn tooltip(app: &AppHandle, text: &str) {
 async fn refresh(app: &AppHandle) -> Result<Snapshot> {
     let res = app.state::<Tray>().snapshot().await;
     match &res {
-        Ok(s) => apply_snapshot(app, s),
+        Ok(s) => {
+            apply_snapshot(app, s);
+            notify(app, s).await;
+        }
         Err(e) => {
             // No daemon → no power or alert data; don't leave a stale badge up.
             set_icon(app, Icon::Plain);
@@ -147,6 +151,29 @@ async fn refresh(app: &AppHandle) -> Result<Snapshot> {
         }
     }
     res
+}
+
+/// Post the daemon's pending immediate-alert notifications. Claim first, so overlapping refreshes and
+/// tray restarts post each once. Text is untrusted LLM output: plain strings to the API, no shell.
+async fn notify(app: &AppHandle, st: &Snapshot) {
+    for a in st.alerts.iter().filter(|a| a.notify) {
+        let claim = Request::Notified { skill: a.skill.clone(), key: a.key.clone() };
+        if app.state::<Tray>().request(claim).await.is_err() {
+            continue;
+        }
+        let mut n = app.notification().builder().title(format!("otto · {} · {}", a.skill, a.headline)).body(first_sentence(&a.summary));
+        if let Some(p) = &a.report {
+            n = n.extra("report", p);
+        }
+        let _ = n.show();
+    }
+}
+
+/// "Disk full on db-1. Writes failing." → "Disk full on db-1."
+fn first_sentence(s: &str) -> &str {
+    let s = s.trim();
+    let end = s.char_indices().find(|&(i, c)| matches!(c, '.' | '!' | '?') && s[i + 1..].starts_with(char::is_whitespace));
+    s[..end.map_or(s.len(), |(i, _)| i + 1)].lines().next().unwrap_or("")
 }
 
 /// `reports`: (skill, report path) for the latest report per skill.
@@ -294,12 +321,20 @@ async fn menu_action(app: AppHandle, id: String) {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .manage(Tray::default())
         .invoke_handler(tauri::generate_handler![snapshot, run_now, dismiss, open_skills, open_report, quit])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             let handle = app.handle().clone();
+            // Click on a notification opens its report (same path checks as the popover).
+            app.notification().on_action(|e| {
+                let report = e.notification().and_then(|n| n.extra().get("report")).and_then(|v| v.as_str());
+                if let (Some(p), "tap") = (report, e.action_id()) {
+                    let _ = open_report(PathBuf::from(p));
+                }
+            })?;
             TrayIconBuilder::with_id(TRAY)
                 .icon(tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?)
                 .icon_as_template(true)
@@ -323,4 +358,14 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("tauri app");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn first_sentence() {
+        assert_eq!(super::first_sentence(" v1.2 down! 0 rps since 10:00. Rollback?"), "v1.2 down!");
+        assert_eq!(super::first_sentence("no stop\nsecond line"), "no stop");
+        assert_eq!(super::first_sentence(""), "");
+    }
 }

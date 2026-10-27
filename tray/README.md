@@ -16,6 +16,8 @@ cargo tauri dev                                   # run from source
   `report ↗`, `dismiss`; hidden when none), NOW (running runs), ATTENTION (failures in 24h,
   skill parse errors), QUOTA (per runner window, `NN% left`), NEXT (skills by next fire,
   `run` per row). Polls `Snapshot` every 2s while open; hides on focus loss.
+- **Notifications**: a snapshot alert with `notify` is claimed (`Notified`), then posted; click opens
+  its report. Only from the bundled `.app`, after allowing it in System Settings ▸ Notifications.
 
 Icons: `icons/tray.png` is a 44px template (black + source alpha) rendered from `assets/otto-blue.svg`;
 `tray-critical.png`/`tray-immediate.png` are `tray-warn.png` with the badge filled yellow/red and the glyph

@@ -126,6 +126,9 @@ pub struct Alert {
     pub summary: String,
     pub report: Option<PathBuf>,
     pub first_seen: DateTime<Local>,
+    /// Pending notification; claim with `Notified` before posting.
+    #[serde(default)]
+    pub notify: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +138,7 @@ pub enum Request {
     RunNow { skill: String },
     Reload,
     Dismiss { skill: String, key: String },
+    Notified { skill: String, key: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

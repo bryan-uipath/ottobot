@@ -80,6 +80,11 @@ pub enum Request {
         skill: String,
         key: String,
     },
+    /// Claim alert's pending notification (`notify`); Ok only for the first claim, so it's posted once.
+    Notified {
+        skill: String,
+        key: String,
+    },
 }
 
 /// e.g. `{"type":"Ok"}`, `{"type":"Status","data":{...}}`.
@@ -163,12 +168,16 @@ pub async fn handle(shared: &Shared, cmds: &mpsc::Sender<Command>, req: Request)
             Command::RunNow(skill)
         }
         Request::Reload => Command::Reload,
-        Request::Dismiss { skill, key } => {
+        Request::Dismiss { ref skill, ref key } | Request::Notified { ref skill, ref key } => {
             let mut st = shared.lock().unwrap();
-            if !st.dismiss(&skill, &key) {
-                return Response::Error(format!("no alert {skill}/{key}"));
+            let (done, what) = match req {
+                Request::Dismiss { .. } => (st.dismiss(skill, key), "alert"),
+                _ => (st.claim_notify(skill, key), "pending notification"),
+            };
+            if !done {
+                return Response::Error(format!("no {what} {skill}/{key}"));
             }
-            return match (Store { dir: st.store_dir.clone() }).save_alerts(&st.alerts) {
+            return match (Store { dir: st.store_dir.clone() }).save_alerts(&st) {
                 Ok(()) => Response::Ok,
                 Err(e) => Response::Error(format!("save alerts: {e:#}")),
             };
@@ -191,6 +200,8 @@ mod tests {
         assert!(matches!(serde_json::from_str::<Request>(r#"{"type":"Status"}"#).unwrap(), Request::Status));
         let d: Request = serde_json::from_str(r#"{"type":"Dismiss","skill":"s","key":"k"}"#).unwrap();
         assert!(matches!(d, Request::Dismiss { ref skill, ref key } if skill == "s" && key == "k"));
+        let n: Request = serde_json::from_str(r#"{"type":"Notified","skill":"s","key":"k"}"#).unwrap();
+        assert!(matches!(n, Request::Notified { ref skill, ref key } if skill == "s" && key == "k"));
         assert_eq!(serde_json::to_string(&Response::Ok).unwrap(), r#"{"type":"Ok"}"#);
         assert_eq!(
             serde_json::to_string(&Response::Events(vec![RunEvent::Text("hi".into())])).unwrap(),
