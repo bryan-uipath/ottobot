@@ -126,7 +126,7 @@ fn toggle(app: &AppHandle, rect: Rect) -> tauri::Result<()> {
         let wa = m.work_area();
         x = x.min(wa.position.x as f64 + wa.size.width as f64 - w).max(wa.position.x as f64);
     }
-    win.set_position(PhysicalPosition::new(x, pos.y + size.height + 4.0 * scale))?;
+    win.set_position(PhysicalPosition::new(x, pos.y + size.height - 2.0 * scale))?;
     // Caret x in CSS px, so it keeps pointing at the icon when the window is clamped at a screen edge.
     let caret = (pos.x + size.width / 2.0 - x) / scale;
     let _ = win.eval(format!("document.documentElement.style.setProperty('--caret-x','{caret:.0}px')"));
