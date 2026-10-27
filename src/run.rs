@@ -23,6 +23,9 @@ pub struct RunMeta {
     pub started_at: DateTime<Local>,
     pub finished_at: Option<DateTime<Local>>,
     pub status: RunStatus,
+    /// First line of the runner's final message; shown as the skill's "latest run" one-liner.
+    #[serde(default)]
+    pub summary: Option<String>,
     pub cost_usd: Option<f64>,
     pub input_tokens: u64,
     pub output_tokens: u64,

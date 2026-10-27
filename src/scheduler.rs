@@ -270,6 +270,7 @@ impl Scheduler {
             cost_usd: None,
             input_tokens: 0,
             output_tokens: 0,
+            summary: None,
         };
         self.store.save_run_meta(&meta)?;
         {
@@ -363,7 +364,12 @@ async fn execute(
                     let _ = store.append_event(id, &e);
                     let mut sh = shared.lock().unwrap();
                     match &e {
-                        RunEvent::Done { ok: o, .. } => ok = *o,
+                        RunEvent::Done { ok: o, summary } => {
+                            ok = *o;
+                            if let Some(r) = sh.run_mut(id) {
+                                r.meta.summary = summary.lines().find(|l| !l.trim().is_empty()).map(|l| crate::runner::truncate(l, 200));
+                            }
+                        }
                         RunEvent::Usage { input, output, cost_usd } => {
                             if let Some(r) = sh.run_mut(id) {
                                 r.meta.input_tokens = *input;
