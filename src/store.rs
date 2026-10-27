@@ -71,7 +71,11 @@ impl Store {
 
     /// Separate from state.json: only written under the shared-state lock, so it never races the scheduler's state saves.
     pub fn load_alerts(&self) -> AlertsFile {
-        fs::read_to_string(self.dir.join("alerts.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        let Ok(s) = fs::read_to_string(self.dir.join("alerts.json")) else { return AlertsFile::default() };
+        // Pre-notification builds wrote a bare array.
+        serde_json::from_str(&s)
+            .or_else(|_| serde_json::from_str(&s).map(|alerts| AlertsFile { alerts, notified: Default::default() }))
+            .unwrap_or_default()
     }
 
     pub fn save_alerts(&self, st: &AppState) -> Result<()> {

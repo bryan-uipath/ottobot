@@ -36,6 +36,7 @@ pub struct Alert {
     /// Level the user dismissed at; a strictly higher verdict re-opens the alert.
     pub dismissed_level: Option<Level>,
     /// Set on entering immediate (if the skill's cap allows); the tray claims it with `Notified` and posts a notification.
+    #[serde(default)]
     pub notify: bool,
 }
 
@@ -113,6 +114,7 @@ impl AppState {
                 }
                 (a.level, a.headline, a.summary, a.report, a.run_id, a.last_seen) =
                     (level, v.headline.clone(), v.summary.clone(), m.report.clone(), m.id.clone(), now);
+                a.notify &= level == Level::Immediate; // lowered before the tray claimed it → don't post
             }
             (None, level) => self.alerts.push(Alert {
                 skill: m.skill.clone(),
@@ -143,8 +145,12 @@ impl AppState {
 
     /// Tray claims a pending notification before posting it, so it's posted once. False if none pending.
     pub fn claim_notify(&mut self, skill: &str, key: &str) -> bool {
-        let Some(a) = self.alerts.iter_mut().find(|a| a.skill == skill && a.key == key && a.notify) else { return false };
-        a.notify = false;
+        let pending = |a: &Alert| a.notify && a.level == Level::Immediate && a.dismissed_level.is_none();
+        if !self.alerts.iter().any(|a| a.skill == skill && a.key == key && pending(a)) {
+            return false;
+        }
+        // One post per skill even if several queued while the tray was down (cap is per skill).
+        self.alerts.iter_mut().filter(|a| a.skill == skill).for_each(|a| a.notify = false);
         true
     }
 
@@ -152,6 +158,7 @@ impl AppState {
     pub fn dismiss(&mut self, skill: &str, key: &str) -> bool {
         let Some(a) = self.alerts.iter_mut().find(|a| a.skill == skill && a.key == key) else { return false };
         a.dismissed_level = Some(a.level);
+        a.notify = false;
         true
     }
 }
@@ -273,6 +280,38 @@ mod tests {
         st.record_verdict(&at(7, "critical", "a"));
         st.record_verdict(&at(8, "immediate", "a"));
         assert!(pending(&st).is_empty(), "still dismissed at immediate");
+    }
+
+    #[test]
+    fn pending_notify_dropped_on_lower_dismiss_and_siblings() {
+        let mut st = AppState::default();
+        st.record_verdict(&at(0, "immediate", "a"));
+        st.record_verdict(&at(1, "critical", "a"));
+        assert!(pending(&st).is_empty() && !st.claim_notify("s", "a"), "lowered before claim");
+        let mut st = AppState::default();
+        st.record_verdict(&at(0, "immediate", "a"));
+        st.dismiss("s", "a");
+        assert!(!st.claim_notify("s", "a"), "dismissed before claim");
+        // Tray down for 7h: two keys queued past the cap → one post.
+        let mut st = AppState::default();
+        st.record_verdict(&at(0, "immediate", "a"));
+        st.record_verdict(&at(7, "immediate", "b"));
+        assert_eq!(pending(&st).len(), 2);
+        assert!(st.claim_notify("s", "b") && pending(&st).is_empty());
+    }
+
+    #[test]
+    fn legacy_alerts_array_loads() {
+        let dir = std::env::temp_dir().join(format!("otto-legacy-alerts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut st = AppState::default();
+        st.record_verdict(&at(0, "critical", "a"));
+        let mut v = serde_json::to_value(&st.alerts).unwrap();
+        v[0].as_object_mut().map(|o| o.remove("notify"));
+        std::fs::write(dir.join("alerts.json"), v.to_string()).unwrap();
+        let f = crate::store::Store { dir: dir.clone() }.load_alerts();
+        assert_eq!(f.alerts.len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
