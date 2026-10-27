@@ -21,12 +21,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c # v2.9.3
       - if: matrix.os == 'ubuntu-22.04'
         run: cargo fmt --all --check
-      # Not clippy-clean yet (2 warnings); add `-- -D warnings` once fixed.
-      - run: cargo clippy --locked --all-targets
+      - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked

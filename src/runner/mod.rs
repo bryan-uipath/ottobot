@@ -97,7 +97,11 @@ pub(crate) fn version(bin: &str) -> Result<String> {
 
 pub(crate) fn truncate(s: &str, n: usize) -> String {
     let s = s.trim().replace('\n', " ⏎ ");
-    if s.chars().count() <= n { s } else { format!("{}…", s.chars().take(n).collect::<String>()) }
+    if s.chars().count() <= n {
+        s
+    } else {
+        format!("{}…", s.chars().take(n).collect::<String>())
+    }
 }
 
 pub(crate) fn which(bin: &str) -> Option<std::path::PathBuf> {

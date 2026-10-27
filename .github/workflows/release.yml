@@ -25,10 +25,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c # v2.9.3
         with:
           key: ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }} --bin otto
@@ -55,10 +55,10 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c # v2.9.3
         with:
           workspaces: tray/src-tauri
           key: tray-${{ matrix.target }}
@@ -90,8 +90,7 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: sha256sum -- * > SHA256SUMS && cat SHA256SUMS
-      # Pinned by major; pinning to a commit SHA is better supply-chain hygiene.
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           target_commitish: ${{ github.sha }}

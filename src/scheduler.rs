@@ -36,7 +36,13 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    pub fn new(shared: Shared, store: Store, tick: Duration, default_runner: String, aliases: std::collections::HashMap<String, Vec<String>>) -> Self {
+    pub fn new(
+        shared: Shared,
+        store: Store,
+        tick: Duration,
+        default_runner: String,
+        aliases: std::collections::HashMap<String, Vec<String>>,
+    ) -> Self {
         let (check_tx, check_rx) = mpsc::unbounded_channel();
         Self { shared, store, tick, default_runner, aliases, last_eval: Local::now(), checking: HashSet::new(), check_tx, check_rx }
     }
@@ -96,7 +102,8 @@ impl Scheduler {
         let _ = self.store.save_state(&st);
         let mut sh = self.shared.lock().unwrap();
         // Preserve active-run markers and last decision notes across reloads.
-        let prev: Vec<(String, Option<String>, String)> = sh.skills.iter().map(|v| (v.skill.name.clone(), v.active_run.clone(), v.note.clone())).collect();
+        let prev: Vec<(String, Option<String>, String)> =
+            sh.skills.iter().map(|v| (v.skill.name.clone(), v.active_run.clone(), v.note.clone())).collect();
         let mut views = views;
         for v in &mut views {
             if let Some((_, a, n)) = prev.iter().find(|(n, _, _)| *n == v.skill.name) {
@@ -226,7 +233,8 @@ impl Scheduler {
             let cooldown = skill.front.trigger.cooldown.unwrap_or_else(|| trigger.default_cooldown());
             entry.last_fired_at.and_then(|t| {
                 let left = cooldown.checked_sub((Local::now() - t).to_std().unwrap_or_default())?;
-                (left > Duration::ZERO).then(|| format!("in cooldown, {} left", humantime::format_duration(Duration::from_secs(left.as_secs()))))
+                (left > Duration::ZERO)
+                    .then(|| format!("in cooldown, {} left", humantime::format_duration(Duration::from_secs(left.as_secs()))))
             })
         } else {
             None
@@ -253,7 +261,10 @@ impl Scheduler {
         let (root, choice) = {
             let sh = self.shared.lock().unwrap();
             let default_runner = skill.front.runner.clone().unwrap_or_else(|| self.default_runner.clone());
-            (sh.root.clone(), crate::route::resolve(skill.front.model.as_ref(), &default_runner, &self.aliases, &sh.runner_usage, &sh.runner_health))
+            (
+                sh.root.clone(),
+                crate::route::resolve(skill.front.model.as_ref(), &default_runner, &self.aliases, &sh.runner_usage, &sh.runner_health),
+            )
         };
         if !choice.why.is_empty() {
             self.shared.lock().unwrap().log(format!("{}: {}", skill.name, choice.why));

@@ -60,7 +60,13 @@ fn expand(cands: Vec<String>, aliases: &HashMap<String, Vec<String>>, depth: u8)
         .collect()
 }
 
-pub fn resolve(spec: Option<&ModelSpec>, default_runner: &str, aliases: &HashMap<String, Vec<String>>, usage: &RunnerUsage, health: &RunnerHealth) -> Choice {
+pub fn resolve(
+    spec: Option<&ModelSpec>,
+    default_runner: &str,
+    aliases: &HashMap<String, Vec<String>>,
+    usage: &RunnerUsage,
+    health: &RunnerHealth,
+) -> Choice {
     let cands = expand(spec.map(ModelSpec::candidates).unwrap_or_default(), aliases, 3);
     if cands.is_empty() {
         return Choice { runner: default_runner.to_string(), model: None, effort: None, why: String::new() };
@@ -82,7 +88,12 @@ pub fn resolve(spec: Option<&ModelSpec>, default_runner: &str, aliases: &HashMap
     let (runner, model, effort) = chosen.clone();
     let others: Vec<String> = scored.iter().filter(|(_, p)| *p != chosen).map(|(s, p)| format!("{} {s:.0}%", p.0)).collect();
     Choice {
-        why: format!("routed to {}{} ({score:.0}% left vs {})", runner, model.as_ref().map(|m| format!("/{m}")).unwrap_or_default(), others.join(", ")),
+        why: format!(
+            "routed to {}{} ({score:.0}% left vs {})",
+            runner,
+            model.as_ref().map(|m| format!("/{m}")).unwrap_or_default(),
+            others.join(", ")
+        ),
         runner,
         model,
         effort,
@@ -109,7 +120,10 @@ mod tests {
         let c = resolve(Some(&spec), "claude", &none, &usage(95.0, 90.0), &ok);
         assert_eq!((c.runner.as_str(), c.model.as_deref()), ("claude", Some("opus")));
         // Nested alias, tie keeps order.
-        let aliases = HashMap::from([("tier1".to_string(), vec!["best".to_string()]), ("best".to_string(), vec!["codex/gpt-6-astra".to_string(), "claude/opus".to_string()])]);
+        let aliases = HashMap::from([
+            ("tier1".to_string(), vec!["best".to_string()]),
+            ("best".to_string(), vec!["codex/gpt-6-astra".to_string(), "claude/opus".to_string()]),
+        ]);
         let c = resolve(Some(&ModelSpec::One("tier1".into())), "claude", &aliases, &usage(50.0, 50.0), &ok);
         assert_eq!(c.runner, "codex");
         let c = resolve(Some(&ModelSpec::One("haiku".into())), "claude", &none, &usage(0.0, 100.0), &ok);
@@ -120,7 +134,13 @@ mod tests {
         let c = resolve(Some(&ModelSpec::One("claude/claude-sonnet-4@20250514".into())), "claude", &none, &usage(0.0, 0.0), &ok);
         assert_eq!((c.model.as_deref(), c.effort.as_deref()), (Some("claude-sonnet-4@20250514"), None));
         // Unknown usage loses to known; unhealthy runner loses to everything.
-        let c = resolve(Some(&spec), "claude", &none, &vec![("claude".into(), Ok(vec![UsageWindow { label: "7d".into(), used_percent: 70.0, resets_at: None }]))], &ok);
+        let c = resolve(
+            Some(&spec),
+            "claude",
+            &none,
+            &vec![("claude".into(), Ok(vec![UsageWindow { label: "7d".into(), used_percent: 70.0, resets_at: None }]))],
+            &ok,
+        );
         assert_eq!(c.runner, "claude");
         let sick: Vec<(String, Result<String, String>)> = vec![("codex".into(), Err("not on PATH".into()))];
         let c = resolve(Some(&spec), "claude", &none, &usage(1.0, 99.0), &sick);
