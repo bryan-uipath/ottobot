@@ -73,6 +73,13 @@ impl Store {
     }
 
     /// Newest first. Runs left `Running` by a crash are reported as failed.
+    /// `<store>/memory/<skill>/`, created on demand. Notes, baselines, open investigations.
+    pub fn memory_dir(&self, skill: &str) -> PathBuf {
+        let d = self.dir.join("memory").join(skill);
+        let _ = fs::create_dir_all(&d);
+        d
+    }
+
     /// `<store>/reports/<id>.html`; the agent may write `.md` beside it instead.
     pub fn report_path(&self, id: &str) -> PathBuf {
         self.dir.join("reports").join(format!("{id}.html"))

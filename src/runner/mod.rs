@@ -19,6 +19,8 @@ pub struct Invocation {
     pub permission_mode: Option<String>,
     /// Where the agent should write an HTML report, exported as `$OTTO_REPORT`. None for checker runs.
     pub report: Option<std::path::PathBuf>,
+    /// Per-skill directory that persists across runs, exported as `$OTTO_MEMORY`.
+    pub memory: Option<std::path::PathBuf>,
 }
 
 /// One rate-limit window, e.g. claude's 5h session or codex's 7d.

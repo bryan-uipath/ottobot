@@ -370,10 +370,19 @@ async fn headless(mut backend: client::Backend, name: String) -> Result<()> {
 async fn check_once(root: &std::path::Path, store: &store::Store, runner: &str, name: &str) -> Result<()> {
     let (skills, _) = skill::discover(root);
     let Some(skill) = skills.into_iter().find(|s| s.name == name) else { anyhow::bail!("no skill {name}") };
-    let trigger::Trigger::Event { description, .. } = trigger::Trigger::from_spec(&skill.front.trigger)? else {
+    let trigger::Trigger::Event { description, watch, .. } = trigger::Trigger::from_spec(&skill.front.trigger)? else {
         anyhow::bail!("{name} has a cron trigger, nothing to check")
     };
-    let c = checker::Checker { skill, description, dir: store.dir.join("checkers"), cwd: root.to_path_buf(), runner: runner.to_string() };
+    let memory = store.memory_dir(&skill.name);
+    let c = checker::Checker {
+        skill,
+        description,
+        dir: store.dir.join("checkers"),
+        cwd: root.to_path_buf(),
+        runner: runner.to_string(),
+        watch,
+        memory,
+    };
     let out = c.check(0).await?;
     if let Some(e) = &out.script_failed {
         eprintln!("[ottobot] script failed: {e}");

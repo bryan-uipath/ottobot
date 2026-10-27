@@ -29,10 +29,11 @@ runner: claude                      # default runner for bare model names (claud
 checker_model: sonnet               # event triggers only: model that compiles/evaluates the check
 permission_mode: bypassPermissions  # claude --permission-mode; codex: anything else = `-s <sandbox>`
 trigger:
-  cron: "0 6 * * *"                 # OR event — never both
+  cron: "0 6 * * *"                 # exactly one of cron / event / watch
   event: "Latest scheduled run of <workflow url> failed"
-  check_every: 5m                   # event only
-  cooldown: 8h                      # event only; min gap before the same condition re-fires
+  watch: "Anything anomalous in <component>?"   # agent-judged, with $OTTO_MEMORY (superfan)
+  check_every: 5m                   # event/watch
+  cooldown: 8h                      # event/watch; min gap before the same condition re-fires
 timeout: 90m                        # kill the run after this (default 1h)
 ---
 ```
@@ -55,6 +56,15 @@ Cron dedupes by occurrence: one fire per matching minute, no cooldown by default
 ### Events
 
 Write the condition as a concrete, scriptable fact: a workflow URL, a label, a JQL. On first check `checker_model` compiles it to a script that prints `{"fired", "key", "summary"}`; `key` dedupes, `summary` becomes the run's trigger context. Verify with `otto --check <name>`.
+
+### Watch (superfans)
+
+`watch:` is an agent-judged `event`: every `check_every` the `checker_model` (sonnet) reads
+`$OTTO_MEMORY/notes.md`, looks at the component, decides if something new or worsening is
+going on, updates the notes, and fires `{fired, key, summary}`. The body then runs on the
+heavy `model` list with the same memory. Use it when the condition is "anything strange?"
+rather than a scriptable fact. Body = the investigation + report; tell it to draft (not send)
+any Slack message. Cooldown default 8h; set `check_every: 2h`–`4h`.
 
 ### Models
 

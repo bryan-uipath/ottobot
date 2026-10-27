@@ -47,6 +47,9 @@ pub struct Checker {
     pub dir: PathBuf,
     pub cwd: PathBuf,
     pub runner: String,
+    /// `trigger.watch`: skip scripts, let the checker agent judge with its memory.
+    pub watch: bool,
+    pub memory: PathBuf,
 }
 
 impl Checker {
@@ -56,6 +59,9 @@ impl Checker {
 
     /// Compile if needed, run the script, fall back to an agent on any error.
     pub async fn check(&self, failures: u32) -> Result<Outcome> {
+        if self.watch {
+            return Ok(Outcome { result: self.evaluate_with_agent().await?, mode: Mode::Agent, script_failed: None });
+        }
         let path = self.script_path();
         if !path.exists() {
             match self.compile().await {
@@ -109,6 +115,7 @@ impl Checker {
             effort: None,
             permission_mode: self.skill.front.permission_mode.clone(),
             report: None,
+            memory: Some(self.memory.clone()),
         };
         let (ok, summary) = run_to_end(&self.runner, inv, AGENT_TIMEOUT).await?;
         if !ok {
@@ -146,11 +153,19 @@ impl Checker {
         parse_result(&stdout).with_context(|| format!("bad checker output: {}", tail(&stdout, 300)))
     }
 
-    /// Fallback: the checker model investigates with tools and answers in JSON.
+    /// Fallback (or the whole check, for `watch`): the checker model investigates with tools and answers in JSON.
     async fn evaluate_with_agent(&self) -> Result<CheckResult> {
+        let watch = if self.watch {
+            "You are this component's superfan: an engineer with nothing better to do than refresh the charts and \
+             look for anything strange. $OTTO_MEMORY is your notebook across checks: read it first (baselines, known \
+             issues, open investigations), compare now against it, and update it before answering. Fire only for \
+             something new or worsening that a human would want investigated; known/ongoing items do not fire again.\n\n"
+        } else {
+            ""
+        };
         let prompt = format!(
-            "Determine whether this condition holds right now:\n\n  {desc}\n\n\
-             Investigate with the tools available (gh, curl, jq...). Do not fix anything.\n\
+            "{watch}Determine whether this condition holds right now:\n\n  {desc}\n\n\
+             Investigate with the tools available (gh, curl, jq, az...). Do not fix anything.\n\
              Your final message must be exactly one JSON line, nothing else:\n\
              {{\"fired\": bool, \"key\": string, \"summary\": string}}\n\
              key = stable id of this occurrence (\"\" when not fired); summary = one human line \
@@ -166,6 +181,7 @@ impl Checker {
             effort: None,
             permission_mode: self.skill.front.permission_mode.clone(),
             report: None,
+            memory: Some(self.memory.clone()),
         };
         let (ok, summary) = run_to_end(&self.runner, inv, AGENT_TIMEOUT).await?;
         if !ok {
@@ -194,6 +210,9 @@ fn parse_result(text: &str) -> Option<CheckResult> {
 async fn run_to_end(runner: &str, inv: Invocation, timeout: Duration) -> Result<(bool, String)> {
     let runner = runner::by_name(runner)?;
     let mut cmd = runner.command(&inv);
+    if let Some(m) = &inv.memory {
+        cmd.env("OTTO_MEMORY", m);
+    }
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
     let mut child = cmd.spawn()?;
     let stdout = child.stdout.take().context("piped")?;

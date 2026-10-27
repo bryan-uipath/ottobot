@@ -149,7 +149,7 @@ impl Scheduler {
         let root = self.shared.lock().unwrap().root.clone();
         let mut sh = self.shared.lock().unwrap();
         for v in sh.skills.iter_mut() {
-            let Ok(Trigger::Event { description, check_every }) = &v.trigger else { continue };
+            let Ok(Trigger::Event { description, check_every, watch }) = &v.trigger else { continue };
             let name = v.skill.name.clone();
             if self.checking.contains(&name) || v.active_run.is_some() {
                 continue;
@@ -168,6 +168,8 @@ impl Scheduler {
                 dir: self.store.dir.join("checkers"),
                 cwd: root.clone(),
                 runner: v.skill.front.runner.clone().unwrap_or_else(|| self.default_runner.clone()),
+                watch: *watch,
+                memory: self.store.memory_dir(&v.skill.name),
             };
             let failures = entry.checker_failures;
             let tx = self.check_tx.clone();
@@ -280,6 +282,7 @@ impl Scheduler {
             effort: choice.effort.clone(),
             permission_mode: skill.front.permission_mode.clone(),
             report: Some(report),
+            memory: Some(self.store.memory_dir(&skill.name)),
         };
         let meta = RunMeta {
             id: id.clone(),
@@ -340,7 +343,8 @@ fn build_prompt(skill: &Skill, key: &str, context: Option<&str>) -> String {
          Never push to a protected branch. \
          Every run ends with a report: write a single self-contained HTML file to the path in $OTTO_REPORT, \
          or, if the skill does not call for HTML, a short markdown summary to the path in $OTTO_REPORT_MD. \
-         Say what you did, what you found, and what needs a human.\n\n{}",
+         Say what you did, what you found, and what needs a human. \
+         $OTTO_MEMORY is a directory that persists across runs of this skill: read its notes first, and leave notes for next time.\n\n{}",
         skill.name, key, ctx, skill.body
     )
 }
@@ -364,6 +368,9 @@ async fn execute(
     let mut cmd = runner.command(&inv);
     if let Some(r) = &inv.report {
         cmd.env("OTTO_REPORT", r).env("OTTO_REPORT_MD", r.with_extension("md"));
+    }
+    if let Some(m) = &inv.memory {
+        cmd.env("OTTO_MEMORY", m);
     }
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     let mut child = cmd.spawn()?;
