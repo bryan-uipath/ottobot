@@ -32,9 +32,49 @@ pub struct RunMeta {
     /// Report file: the agent's `.html`/`.md`, or ottobot's stub `.md`. Set when the run finishes.
     #[serde(default)]
     pub report: Option<std::path::PathBuf>,
+    /// The agent's `$OTTO_VERDICT`, validated. None = unassessed (missing or invalid), never "normal".
+    #[serde(default)]
+    pub verdict: Option<Verdict>,
     pub cost_usd: Option<f64>,
     pub input_tokens: u64,
     pub output_tokens: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Level {
+    Normal,
+    Critical,
+    Immediate,
+}
+
+/// Severity the agent declares in `$OTTO_VERDICT` (`<store>/reports/<id>.verdict.json`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Verdict {
+    pub level: Level,
+    #[serde(default)]
+    pub incident_key: String,
+    #[serde(default)]
+    pub headline: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+    #[serde(default)]
+    pub action: String,
+}
+
+impl Verdict {
+    /// Unknown level or bad JSON → None. Headline capped at 80 chars; `immediate` without evidence → `critical`.
+    pub fn parse(s: &str) -> Option<Self> {
+        let mut v: Verdict = serde_json::from_str(s).ok()?;
+        v.headline = crate::runner::truncate(&v.headline, 80);
+        v.evidence.retain(|e| !e.trim().is_empty());
+        if v.level == Level::Immediate && v.evidence.is_empty() {
+            v.level = Level::Critical;
+        }
+        Some(v)
+    }
 }
 
 /// Runner-agnostic event stream rendered by the session view.

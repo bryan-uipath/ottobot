@@ -1,6 +1,6 @@
 //! Persistent state under ~/.ottobot/<hash-of-skills-root>/.
 
-use crate::run::{Run, RunEvent, RunMeta};
+use crate::run::{Level, Run, RunEvent, RunMeta, Verdict};
 use anyhow::Result;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
@@ -88,6 +88,7 @@ impl Store {
     pub fn finalize_report(&self, m: &mut RunMeta) {
         let html = self.report_path(&m.id);
         let md = html.with_extension("md");
+        m.verdict = fs::read_to_string(html.with_extension("verdict.json")).ok().and_then(|s| Verdict::parse(&s));
         // An agent-written page wins. A page *we* rendered is derived: re-render if the .md is there, so a
         // stub written during crash reconciliation never hides the agent's real notes.
         let ours = fs::read_to_string(&html).map(|s| s.starts_with(RENDERED_MARK)).unwrap_or(false);
@@ -202,9 +203,10 @@ fn render_markdown(md: &Path, html: &Path, m: &RunMeta) -> std::io::Result<()> {
     let page = format!(
         "{RENDERED_MARK}<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
          <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:\">\
-         <title>{title}</title><style>{REPORT_CSS}</style><main>{meta}{body}</main>",
+         <title>{title}</title><style>{REPORT_CSS}{VERDICT_CSS}</style><main>{meta}{verdict}{body}</main>",
         title = html_escape(&title),
         meta = meta_block(m),
+        verdict = verdict_block(m),
     );
     fs::write(html, page)
 }
@@ -259,6 +261,24 @@ fn meta_block(m: &RunMeta) -> String {
     )
 }
 
+/// TL;DR banner: a boxed summary for critical/immediate, one dim line for normal, nothing when unassessed.
+/// Every field is LLM-written from untrusted telemetry, so all of it is escaped.
+fn verdict_block(m: &RunMeta) -> String {
+    let Some(v) = &m.verdict else { return String::new() };
+    let (class, label) = match v.level {
+        Level::Normal => return format!("<div class=\"otto-normal\">normal · {}</div>", html_escape(&v.headline)),
+        Level::Critical => ("otto-critical", "CRITICAL"),
+        Level::Immediate => ("otto-immediate", "IMMEDIATE"),
+    };
+    let evidence: String = v.evidence.iter().map(|e| format!("<li>{}</li>", html_escape(e))).collect();
+    let action = if v.action.is_empty() { String::new() } else { format!("<p><b>Action:</b> {}</p>", html_escape(&v.action)) };
+    format!(
+        "<div class=\"otto-verdict {class}\"><p><b>{label}</b> · {headline}</p><p>{summary}</p><ul>{evidence}</ul>{action}</div>",
+        headline = html_escape(&v.headline),
+        summary = html_escape(&v.summary),
+    )
+}
+
 fn kfmt(n: u64) -> String {
     if n >= 1000 {
         format!("{:.1}k", n as f64 / 1000.0)
@@ -267,22 +287,28 @@ fn kfmt(n: u64) -> String {
     }
 }
 
-/// Agent-written HTML gets the same meta line appended once (before </body> when present).
+/// Agent-written HTML gets the same meta line appended once (before </body> when present),
+/// and the verdict banner right after the opening <body> tag.
 fn stamp_html(html: &Path, m: &RunMeta) -> std::io::Result<()> {
-    let s = fs::read_to_string(html)?;
+    let mut s = fs::read_to_string(html)?;
     if s.contains("<!--otto-meta-->") {
         return Ok(());
     }
-    let block = format!("<style>{META_CSS}</style>{}", meta_block(m));
-    let out = match s.rfind("</body>") {
+    let block = format!("<style>{META_CSS}{VERDICT_CSS}</style>{}", meta_block(m));
+    s = match s.rfind("</body>") {
         Some(i) => format!("{}{}{}", &s[..i], block, &s[i..]),
         None => format!("{s}{block}"),
     };
-    fs::write(html, out)
+    let top = s.find("<body").and_then(|i| s[i..].find('>').map(|j| i + j + 1)).unwrap_or(0);
+    s.insert_str(top, &verdict_block(m));
+    fs::write(html, s)
 }
 
 // Stamped into agent pages of unknown palette: inherit their text colour, just dimmer.
 const META_CSS: &str = ".otto-meta{font:12px/1.5 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;opacity:.65;border-top:1px solid currentColor;margin-top:28px;padding-top:10px}.otto-meta code{font:11px ui-monospace,Menlo,monospace}";
+
+// Translucent fills over whatever palette the page has: yellow for critical, red for immediate.
+const VERDICT_CSS: &str = ".otto-verdict{font:14px/1.5 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;border:1px solid;border-left-width:4px;border-radius:6px;padding:4px 14px;margin:12px 0 20px}.otto-verdict p{margin:8px 0}.otto-verdict ul{margin:4px 0;padding-left:1.4em}.otto-critical{border-color:#f5a623;background:rgba(245,166,35,.14)}.otto-immediate{border-color:#ff5c5c;background:rgba(255,92,92,.16)}.otto-normal{font:12px/1.5 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;opacity:.7;margin:4px 0 12px}";
 
 pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
@@ -353,5 +379,65 @@ mod tests {
         assert_eq!(v[3], Ok("https://en.wikipedia.org/wiki/Rust_(language)"));
         assert_eq!(v[4], Err(") now."));
         assert_eq!(split_urls("no links"), vec![Err("no links")]);
+    }
+
+    fn meta(id: &str) -> RunMeta {
+        RunMeta {
+            id: id.into(),
+            skill: "s".into(),
+            runner: "claude".into(),
+            model: None,
+            effort: None,
+            trigger_key: "k".into(),
+            cwd: PathBuf::new(),
+            started_at: Local::now(),
+            finished_at: Some(Local::now()),
+            status: crate::run::RunStatus::Succeeded,
+            summary: None,
+            report: None,
+            verdict: None,
+            cost_usd: None,
+            input_tokens: 0,
+            output_tokens: 0,
+        }
+    }
+
+    #[test]
+    fn verdict_validation() {
+        assert_eq!(Verdict::parse(r#"{"level":"panic","headline":"x"}"#), None);
+        assert_eq!(Verdict::parse("not json"), None);
+        let v = Verdict::parse(&format!(r#"{{"level":"immediate","headline":"{}","evidence":[" "]}}"#, "h".repeat(100))).unwrap();
+        assert_eq!(v.level, Level::Critical);
+        assert_eq!(v.headline.chars().count(), 81); // 80 + ellipsis
+        assert_eq!(Verdict::parse(r#"{"level":"immediate","evidence":["5xx 4% vs 0.1%"]}"#).unwrap().level, Level::Immediate);
+    }
+
+    #[test]
+    fn banner_escapes() {
+        let mut m = meta("r");
+        m.verdict = Verdict::parse(r#"{"level":"critical","headline":"<script>x</script>","evidence":["<img onerror=y>"],"action":"a&b"}"#);
+        let b = verdict_block(&m);
+        assert!(!b.contains("<script") && !b.contains("<img"), "{b}");
+        assert!(b.contains("&lt;script&gt;") && b.contains("a&amp;b") && b.contains("otto-critical"));
+    }
+
+    #[test]
+    fn finalize_reads_verdict_sidecar() {
+        let dir = std::env::temp_dir().join(format!("otto-verdict-test-{}", std::process::id()));
+        fs::create_dir_all(dir.join("reports")).unwrap();
+        let store = Store { dir: dir.clone() };
+        let mut m = meta("run1");
+        fs::write(store.report_path("run1"), "<html><body><p>hi</p></body></html>").unwrap();
+        fs::write(dir.join("reports/run1.verdict.json"), r#"{"level":"immediate","headline":"down","evidence":["0 rps"]}"#).unwrap();
+        store.finalize_report(&mut m);
+        assert_eq!(m.verdict.as_ref().map(|v| v.level), Some(Level::Immediate));
+        let page = fs::read_to_string(store.report_path("run1")).unwrap();
+        assert!(page.starts_with("<html><body><div class=\"otto-verdict otto-immediate\">"), "{page}");
+        // No sidecar → unassessed, md path renders no banner.
+        let mut m2 = meta("run2");
+        store.finalize_report(&mut m2);
+        assert!(m2.verdict.is_none());
+        assert!(!fs::read_to_string(store.report_path("run2")).unwrap().contains("class=\"otto-verdict"));
+        let _ = fs::remove_dir_all(dir);
     }
 }

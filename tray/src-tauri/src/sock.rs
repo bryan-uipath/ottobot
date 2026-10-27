@@ -40,6 +40,25 @@ pub struct RunMeta {
     pub summary: Option<String>,
     #[serde(default)]
     pub report: Option<std::path::PathBuf>,
+    #[serde(default)]
+    pub verdict: Option<Verdict>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Level {
+    Normal,
+    Critical,
+    Immediate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Verdict {
+    pub level: Level,
+    #[serde(default)]
+    pub incident_key: String,
+    #[serde(default)]
+    pub headline: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,5 +171,16 @@ mod tests {
             "runner_health":[["claude",{"Ok":"2.1"}]],
             "runner_usage":[["claude",{"Ok":[{"label":"5h","used_percent":37.0,"resets_at":null}]}],["codex",{"Err":"no sessions"}]]}}"#;
         assert!(matches!(serde_json::from_str(s).unwrap(), Response::Snapshot(Snapshot { daemon_pid: Some(1), .. })));
+    }
+
+    #[test]
+    fn run_meta_with_and_without_verdict() {
+        let old = r#"{"id":"r","skill":"s","runner":"claude","model":null,"started_at":"2026-01-01T00:00:00+00:00","finished_at":null,"status":"Running"}"#;
+        assert!(serde_json::from_str::<RunMeta>(old).unwrap().verdict.is_none());
+        let new = old.replace(
+            r#""status""#,
+            r#""verdict":{"level":"immediate","incident_key":"k","headline":"h","summary":"x","evidence":["e"],"action":"a"},"status""#,
+        );
+        assert_eq!(serde_json::from_str::<RunMeta>(&new).unwrap().verdict.map(|v| v.level), Some(Level::Immediate));
     }
 }

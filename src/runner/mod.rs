@@ -17,7 +17,7 @@ pub struct Invocation {
     /// Reasoning effort (`low|medium|high`), from a `model@effort` candidate.
     pub effort: Option<String>,
     pub permission_mode: Option<String>,
-    /// Where the agent should write an HTML report, exported as `$OTTO_REPORT`. None for checker runs.
+    /// Where the agent should write an HTML report, exported as `$OTTO_REPORT` (plus `_MD`, `$OTTO_VERDICT` siblings). None for checker runs.
     pub report: Option<std::path::PathBuf>,
     /// Per-skill directory that persists across runs, exported as `$OTTO_MEMORY`.
     pub memory: Option<std::path::PathBuf>,
@@ -29,7 +29,7 @@ impl Invocation {
     /// Env every runner gets; one place so a new variable can't end up on only one path.
     pub fn apply_env(&self, cmd: &mut Command) {
         if let Some(r) = &self.report {
-            cmd.env("OTTO_REPORT", r).env("OTTO_REPORT_MD", r.with_extension("md"));
+            cmd.env("OTTO_REPORT", r).env("OTTO_REPORT_MD", r.with_extension("md")).env("OTTO_VERDICT", r.with_extension("verdict.json"));
         }
         if let Some(m) = &self.memory {
             cmd.env("OTTO_MEMORY", m);
