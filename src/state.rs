@@ -33,6 +33,8 @@ pub struct AppState {
     pub runner_health: Vec<(String, Result<String, String>)>,
     /// Per-runner quota summary, refreshed in the background.
     pub runner_usage: Vec<(String, Result<String, String>)>,
+    /// This process's pid when running as `otto daemon`.
+    pub daemon_pid: Option<u32>,
 }
 
 impl AppState {

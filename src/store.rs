@@ -44,6 +44,11 @@ impl Store {
         Ok(Self { dir })
     }
 
+    /// One scheduler per store: a daemon and an in-process TUI on the same root would double-fire.
+    pub fn lock_scheduler(&self) -> Result<FileLock> {
+        FileLock::acquire(&self.dir.join("scheduler.pid")).map_err(|e| anyhow::anyhow!("{e:#}; use the TUI as a client or stop it"))
+    }
+
     pub fn load_state(&self) -> State {
         fs::read_to_string(self.dir.join("state.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
@@ -86,5 +91,28 @@ impl Store {
         runs.sort_by(|a, b| b.meta.started_at.cmp(&a.meta.started_at));
         runs.truncate(limit);
         runs
+    }
+}
+
+/// Exclusive `flock` held for the process lifetime; the kernel releases it on any exit,
+/// so a crash never leaves a stale lock and two starters can't both win.
+pub struct FileLock {
+    _file: fs::File,
+}
+
+impl FileLock {
+    pub fn acquire(path: &Path) -> Result<Self> {
+        use std::os::unix::io::AsRawFd;
+        let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
+        // SAFETY: valid open fd; flock has no memory-safety preconditions.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let holder = fs::read_to_string(path).unwrap_or_default();
+            anyhow::bail!("{} is held by pid {}", path.display(), holder.trim());
+        }
+        // Pid is informational only; the flock is the lock.
+        let mut f = &file;
+        let _ = f.set_len(0);
+        let _ = write!(f, "{}", std::process::id());
+        Ok(Self { _file: file })
     }
 }

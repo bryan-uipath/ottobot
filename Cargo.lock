@@ -1212,6 +1212,7 @@ dependencies = [
  "dirs",
  "humantime",
  "humantime-serde",
+ "libc",
  "ratatui",
  "serde",
  "serde_json",

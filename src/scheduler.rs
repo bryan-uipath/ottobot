@@ -275,6 +275,7 @@ impl Scheduler {
         {
             let mut sh = self.shared.lock().unwrap();
             sh.runs.insert(0, Run { meta: meta.clone(), events: vec![] });
+            sh.runs.truncate(200); // daemon lives for weeks; match load_runs()
             if let Some(v) = sh.skills.iter_mut().find(|v| v.skill.name == skill.name) {
                 v.active_run = Some(id.clone());
                 v.last_fired = Some(meta.started_at);
