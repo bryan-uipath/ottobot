@@ -299,9 +299,26 @@ fn stamp_html(html: &Path, m: &RunMeta) -> std::io::Result<()> {
         Some(i) => format!("{}{}{}", &s[..i], block, &s[i..]),
         None => format!("{s}{block}"),
     };
-    let top = s.find("<body").and_then(|i| s[i..].find('>').map(|j| i + j + 1)).unwrap_or(0);
-    s.insert_str(top, &verdict_block(m));
+    s.insert_str(body_start(&s), &verdict_block(m));
     fs::write(html, s)
+}
+
+/// Offset just past the real `<body…>` tag (any case, not inside a comment); else after `</head>` or the doctype.
+fn body_start(s: &str) -> usize {
+    let l = s.to_ascii_lowercase(); // same byte offsets as `s`
+    let mut i = 0;
+    while let Some(j) = l[i..].find("<body") {
+        let at = i + j;
+        let in_comment = l[..at].rfind("<!--").is_some_and(|c| !l[c..at].contains("-->"));
+        if !in_comment && l[at + 5..].starts_with(|c: char| c == '>' || c.is_ascii_whitespace()) {
+            return l[at..].find('>').map_or(s.len(), |k| at + k + 1);
+        }
+        i = at + 5;
+    }
+    l.find("</head>")
+        .map(|h| h + 7)
+        .or_else(|| l.trim_start().starts_with("<!doctype").then(|| l.find('>').map_or(0, |k| k + 1)))
+        .unwrap_or(0)
 }
 
 // Stamped into agent pages of unknown palette: inherit their text colour, just dimmer.
@@ -408,8 +425,25 @@ mod tests {
         assert_eq!(Verdict::parse("not json"), None);
         let v = Verdict::parse(&format!(r#"{{"level":"immediate","headline":"{}","evidence":[" "]}}"#, "h".repeat(100))).unwrap();
         assert_eq!(v.level, Level::Critical);
-        assert_eq!(v.headline.chars().count(), 81); // 80 + ellipsis
+        assert_eq!(v.headline.chars().count(), 80); // 79 + ellipsis
         assert_eq!(Verdict::parse(r#"{"level":"immediate","evidence":["5xx 4% vs 0.1%"]}"#).unwrap().level, Level::Immediate);
+    }
+
+    #[test]
+    fn verdict_nulls_are_defaults() {
+        let v = Verdict::parse(r#"{"level":"critical","incident_key":null,"headline":"5xx up","evidence":null,"action":null}"#);
+        assert_eq!(v.map(|v| (v.level, v.headline)), Some((Level::Critical, "5xx up".into())));
+    }
+
+    #[test]
+    fn body_start_skips_comments_and_case() {
+        let s = "<!doctype html><html><head><!-- <body> below --></head><BODY class=x><p>r</p></BODY></html>";
+        assert!(s[body_start(s)..].starts_with("<p>r"));
+        let s = "<!DOCTYPE html><html><head><title>t</title></head><p>r</p>";
+        assert!(s[body_start(s)..].starts_with("<p>r"));
+        let s = "<!doctype html><p>r</p>";
+        assert!(s[body_start(s)..].starts_with("<p>r"));
+        assert!(body_start("<bodyguard>") == 0);
     }
 
     #[test]

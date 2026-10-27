@@ -52,23 +52,28 @@ pub enum Level {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Verdict {
     pub level: Level,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub incident_key: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub headline: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub summary: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub evidence: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub action: String,
+}
+
+/// Agents write `"action": null` for fields that don't apply; treat it like a missing key.
+fn null_default<'de, D: serde::Deserializer<'de>, T: Default + Deserialize<'de>>(d: D) -> Result<T, D::Error> {
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
 }
 
 impl Verdict {
     /// Unknown level or bad JSON → None. Headline capped at 80 chars; `immediate` without evidence → `critical`.
     pub fn parse(s: &str) -> Option<Self> {
         let mut v: Verdict = serde_json::from_str(s).ok()?;
-        v.headline = crate::runner::truncate(&v.headline, 80);
+        v.headline = crate::runner::truncate(&v.headline, 79); // + "…" = 80
         v.evidence.retain(|e| !e.trim().is_empty());
         if v.level == Level::Immediate && v.evidence.is_empty() {
             v.level = Level::Critical;
