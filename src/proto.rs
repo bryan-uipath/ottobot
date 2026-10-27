@@ -28,6 +28,7 @@ pub struct Snapshot {
     pub daemon_pid: Option<u32>,
     pub power: Option<crate::power::Power>,
     /// Undismissed critical/immediate alerts; age = now - `first_seen`.
+    #[serde(default)] // a pre-alerts daemon omits it
     pub alerts: Vec<Alert>,
 }
 
