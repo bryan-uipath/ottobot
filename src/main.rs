@@ -72,6 +72,17 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Reports from past runs, newest first (latest per skill unless --all). Reads the store; no daemon needed.
+    Reports {
+        /// Only this skill.
+        skill: Option<String>,
+        /// Every report, not just the latest per skill.
+        #[arg(long)]
+        all: bool,
+        /// Open the newest matching report instead of listing.
+        #[arg(long)]
+        open: bool,
+    },
 }
 
 /// Scheduler running in this process: shared state, its command channel, caffeinate child.
@@ -155,6 +166,10 @@ async fn main() -> Result<()> {
             println!("{e:?}");
         }
         return Ok(());
+    }
+
+    if let Some(Cmd::Reports { skill, all, open }) = &cli.cmd {
+        return reports(&store, skill.as_deref(), *all, *open);
     }
 
     if let Some(name) = &cli.check {
@@ -268,6 +283,42 @@ async fn refresh_usage(shared: state::Shared) {
         shared.lock().unwrap().runner_usage = usage;
         tokio::time::sleep(Duration::from_secs(5 * 60)).await;
     }
+}
+
+/// `otto reports`: list or open report files recorded in run metadata.
+fn reports(store: &store::Store, skill: Option<&str>, all: bool, open: bool) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    let runs: Vec<_> = store
+        .load_runs(usize::MAX)
+        .into_iter()
+        .map(|r| r.meta)
+        .filter(|m| skill.is_none_or(|s| m.skill == s))
+        .filter(|m| m.report.as_ref().is_some_and(|p| p.is_file()))
+        .filter(|m| all || seen.insert(m.skill.clone()))
+        .collect();
+    if runs.is_empty() {
+        anyhow::bail!("no reports{}", skill.map(|s| format!(" for {s}")).unwrap_or_default());
+    }
+    if open {
+        let Some(p) = runs[0].report.as_ref() else { return Ok(()) };
+        std::process::Command::new("open").arg(p).status()?;
+        return Ok(());
+    }
+    for m in &runs {
+        let status = match &m.status {
+            run::RunStatus::Succeeded => "✓",
+            run::RunStatus::Failed(_) => "✗",
+            run::RunStatus::Running => "…",
+        };
+        println!(
+            "{status} {:<16} {}  {}",
+            m.skill,
+            m.started_at.format("%Y-%m-%d %H:%M"),
+            m.report.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
+        );
+    }
+    println!("\n{}", store.dir.join("reports").display());
+    Ok(())
 }
 
 /// Poll the power source every 30s so a switch to battery shows up quickly.

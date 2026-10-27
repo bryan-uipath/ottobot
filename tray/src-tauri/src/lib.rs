@@ -4,6 +4,7 @@ mod sock;
 
 use anyhow::{bail, Context, Result};
 use sock::{Conn, Request, Response, RunStatus, Snapshot};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -14,11 +15,18 @@ const TRAY: &str = "main";
 const POPOVER: &str = "popover";
 const POLL_EVERY: Duration = Duration::from_secs(15);
 
+/// Skill names + latest report per skill: what the tray menu is built from.
+type MenuKey = (Vec<String>, Vec<(String, PathBuf)>);
+
 #[derive(Default)]
 struct Tray {
     conn: tokio::sync::Mutex<Option<Conn>>,
     /// Skill names in the `Run now` submenu.
     skills: Mutex<Vec<String>>,
+    /// What the menu was last built from (skills + latest reports), to rebuild only on change.
+    menu_key: Mutex<Option<MenuKey>>,
+    /// Store dir of the daemon; `Open reports folder` uses `<store>/reports`.
+    store_dir: Mutex<Option<PathBuf>>,
     /// Skills root of the last daemon seen; `Skills` opens it in Finder.
     root: Mutex<Option<std::path::PathBuf>>,
     /// Which icon is showing (Some(true) = battery badge), to avoid resetting it every poll.
@@ -64,12 +72,19 @@ fn apply_snapshot(app: &AppHandle, st: &Snapshot) {
     tooltip(app, &format!("ottobot · {running} running · {failed} failed{warn}"));
     set_icon(app, batt.is_some());
     let names: Vec<String> = st.skills.iter().map(|v| v.name.clone()).collect();
-    if *t.skills.lock().unwrap() != names {
-        if let (Ok(menu), Some(tray)) = (build_menu(app, &names), app.tray_by_id(TRAY)) {
+    // Latest report per skill; runs are newest first.
+    let mut seen = std::collections::HashSet::new();
+    let reports: Vec<(String, PathBuf)> =
+        st.runs.iter().filter_map(|r| r.report.clone().map(|p| (r.skill.clone(), p))).filter(|(s, _)| seen.insert(s.clone())).collect();
+    let key = (names.clone(), reports.clone());
+    if *t.menu_key.lock().unwrap() != Some(key.clone()) {
+        if let (Ok(menu), Some(tray)) = (build_menu(app, &names, &reports), app.tray_by_id(TRAY)) {
             let _ = tray.set_menu(Some(menu));
         }
+        *t.menu_key.lock().unwrap() = Some(key);
         *t.skills.lock().unwrap() = names;
         *t.root.lock().unwrap() = Some(st.root.clone());
+        *t.store_dir.lock().unwrap() = Some(st.store_dir.clone());
     }
 }
 
@@ -104,14 +119,22 @@ async fn refresh(app: &AppHandle) -> Result<Snapshot> {
     res
 }
 
-fn build_menu(app: &AppHandle, skills: &[String]) -> tauri::Result<Menu<Wry>> {
+/// `reports`: (skill, report path) for the latest report per skill.
+fn build_menu(app: &AppHandle, skills: &[String], reports: &[(String, PathBuf)]) -> tauri::Result<Menu<Wry>> {
     let runs =
         skills.iter().map(|s| MenuItem::with_id(app, format!("run:{s}"), s, true, None::<&str>)).collect::<tauri::Result<Vec<_>>>()?;
     let refs: Vec<&dyn IsMenuItem<Wry>> = runs.iter().map(|m| m as &dyn IsMenuItem<Wry>).collect();
+    let mut reps = reports
+        .iter()
+        .map(|(s, p)| MenuItem::with_id(app, format!("report:{}", p.display()), s, true, None::<&str>))
+        .collect::<tauri::Result<Vec<_>>>()?;
+    reps.push(MenuItem::with_id(app, "reports_dir", "Open reports folder", true, None::<&str>)?);
+    let rrefs: Vec<&dyn IsMenuItem<Wry>> = reps.iter().map(|m| m as &dyn IsMenuItem<Wry>).collect();
     Menu::with_items(
         app,
         &[
             &Submenu::with_id_and_items(app, "run_now", "Run now", !skills.is_empty(), &refs)?,
+            &Submenu::with_id_and_items(app, "reports", "Reports", true, &rrefs)?,
             &MenuItem::with_id(app, "reload", "Reload skills", true, None::<&str>)?,
             &MenuItem::with_id(app, "skills", "Open skills folder", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
@@ -184,7 +207,7 @@ fn open_report(path: std::path::PathBuf) -> Result<(), String> {
     // Canonicalize both sides: ~/.ottobot may itself be a symlink (dotfiles).
     let home = dirs::home_dir().ok_or("no home")?.join(".ottobot").canonicalize().map_err(|e| e.to_string())?;
     let real = path.canonicalize().map_err(|e| e.to_string())?;
-    if !real.starts_with(&home) || real.extension().and_then(|e| e.to_str()) != Some("html") {
+    if !real.starts_with(&home) || !matches!(real.extension().and_then(|e| e.to_str()), Some("html" | "md")) {
         return Err("not an ottobot report".into());
     }
     std::process::Command::new("open").arg(real).spawn().map(|_| ()).map_err(|e| e.to_string())
@@ -210,6 +233,13 @@ async fn menu_action(app: AppHandle, id: String) {
     let req = match id.as_str() {
         "quit" => return app.exit(0),
         "skills" => return drop(open_skills(app.state::<Tray>())),
+        "reports_dir" => {
+            if let Some(d) = app.state::<Tray>().store_dir.lock().unwrap().clone() {
+                let _ = std::process::Command::new("open").arg(d.join("reports")).spawn();
+            }
+            return;
+        }
+        id if id.starts_with("report:") => return drop(open_report(PathBuf::from(&id["report:".len()..]))),
         "reload" => Request::Reload,
         id => match id.strip_prefix("run:") {
             Some(skill) => Request::RunNow { skill: skill.to_string() },
@@ -234,7 +264,7 @@ pub fn run() {
                 .icon(tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?)
                 .icon_as_template(true)
                 .tooltip("ottobot")
-                .menu(&build_menu(&handle, &[])?)
+                .menu(&build_menu(&handle, &[], &[])?)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, ev| drop(tauri::async_runtime::spawn(menu_action(app.clone(), ev.id().as_ref().to_string()))))
                 .on_tray_icon_event(|tray, ev| {

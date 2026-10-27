@@ -76,6 +76,7 @@ pub struct Snapshot {
     pub runner_health: Vec<(String, Result<String, String>)>,
     pub runner_usage: RunnerUsage,
     pub daemon_pid: Option<u32>,
+    pub store_dir: PathBuf,
     #[serde(default)]
     pub power: Option<Power>,
 }

@@ -271,6 +271,7 @@ impl Scheduler {
         }
         let runner_name = choice.runner;
         let runner = runner::by_name(&runner_name)?;
+        // `$OTTO_REPORT` is the .html path; a sibling .md is accepted too. Without either, ottobot writes a stub.
         let report = self.store.dir.join("reports").join(format!("{id}.html"));
         let inv = Invocation {
             prompt: build_prompt(&skill, key, context),
@@ -320,8 +321,15 @@ impl Scheduler {
             let mut sh = shared.lock().unwrap();
             sh.finish_run(&id, status.clone());
             if let Some(r) = sh.run_mut(&id) {
-                // Whatever happened (incl. timeout), a report on disk counts.
-                r.meta.report = report.is_file().then_some(report);
+                // Whatever happened (incl. timeout), a report on disk counts; else write a stub so every run has one.
+                let md = report.with_extension("md");
+                r.meta.report = if report.is_file() {
+                    Some(report)
+                } else if md.is_file() {
+                    Some(md)
+                } else {
+                    stub_report(&md, &r.meta).ok().map(|_| md)
+                };
                 let _ = store.save_run_meta(&r.meta);
             }
             sh.log(format!("run {id}: {status:?}"));
@@ -337,9 +345,31 @@ fn build_prompt(skill: &Skill, key: &str, context: Option<&str>) -> String {
         "You are running unattended as an ottobot job for skill `{}` (trigger: {}).{} \
          Do not ask questions; make reasonable decisions and finish. \
          Never push to a protected branch. \
-         If the skill asks for a report, write it as a single self-contained HTML file to the path in $OTTO_REPORT.\n\n{}",
+         Every run ends with a report: write a single self-contained HTML file to the path in $OTTO_REPORT, \
+         or, if the skill does not call for HTML, a short markdown summary to the same path with a .md extension. \
+         Say what you did, what you found, and what needs a human.\n\n{}",
         skill.name, key, ctx, skill.body
     )
+}
+
+/// Minimal markdown report when the agent wrote none: status, model, and its final message.
+fn stub_report(path: &std::path::Path, m: &RunMeta) -> std::io::Result<()> {
+    let status = match &m.status {
+        RunStatus::Succeeded => "succeeded".to_string(),
+        RunStatus::Failed(why) => format!("failed: {why}"),
+        RunStatus::Running => "running".to_string(),
+    };
+    let body = format!(
+        "# {} · {}\n\n- run: `{}`\n- status: {status}\n- runner: {}{}\n- started: {}\n\n{}\n",
+        m.skill,
+        m.started_at.format("%Y-%m-%d %H:%M"),
+        m.id,
+        m.runner,
+        m.model.as_ref().map(|x| format!("/{x}")).unwrap_or_default(),
+        m.started_at.to_rfc3339(),
+        m.summary.as_deref().unwrap_or("_the agent left no final message_"),
+    );
+    std::fs::write(path, body)
 }
 
 fn next_check(last: Option<DateTime<Local>>, every: Duration, now: DateTime<Local>) -> DateTime<Local> {

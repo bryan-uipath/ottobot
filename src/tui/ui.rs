@@ -434,7 +434,14 @@ fn draw_history(f: &mut Frame, st: &Snapshot, ui: &mut Ui, area: Rect) {
             let dur = r.finished_at.unwrap_or_else(Local::now) - r.started_at;
             let cost = r.cost_usd.map(|c| format!(" · ${c:.2}")).unwrap_or_default();
             // When · duration · cost; runner/model live in the session header.
-            ListItem::new(rail_row(glyph, &r.skill, &format!("{}  {}{cost}", r.started_at.format("%m-%d %H:%M"), rel_dur(dur)), dim(), w))
+            let rep = if r.report.is_some() { " ⎙" } else { "" };
+            ListItem::new(rail_row(
+                glyph,
+                &r.skill,
+                &format!("{}  {}{cost}{rep}", r.started_at.format("%m-%d %H:%M"), rel_dur(dur)),
+                dim(),
+                w,
+            ))
         })
         .collect();
     let mut state = ListState::default().with_selected(Some(ui.run_idx));
