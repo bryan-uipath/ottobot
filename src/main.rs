@@ -375,8 +375,14 @@ async fn check_once(root: &std::path::Path, store: &store::Store, runner: &str, 
     };
     // A diagnostic check must not rewrite the live notebook the daemon relies on: work on a throwaway copy.
     let live = store.memory_dir(&skill.name);
-    let memory = std::env::temp_dir().join(format!("otto-check-{}-{}", skill.name, std::process::id()));
-    std::fs::create_dir_all(&memory)?;
+    // Under the 0700 store, created non-recursively with 0700 so a pre-existing path (symlink) fails instead of being used.
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let memory = store.dir.join("tmp").join(format!("check-{}-{}-{nonce}", skill.name, std::process::id()));
+    std::fs::create_dir_all(store.dir.join("tmp"))?;
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(&memory)?;
+    }
     for e in std::fs::read_dir(&live)?.flatten() {
         let _ = std::fs::copy(e.path(), memory.join(e.file_name()));
     }
