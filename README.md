@@ -10,6 +10,8 @@ upcoming fires, run history, and live session output.
 
 ![otto TUI](docs/otto-tui.png)
 
+<p><img src="docs/otto-tray.png" width="380" alt="ottobot tray popover"></p>
+
 ## Install
 
 ```sh
