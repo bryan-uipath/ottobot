@@ -105,7 +105,7 @@ state.
 ## Reports
 
 Every run ends with a report. `$OTTO_REPORT` = `<store>/reports/<run-id>.html`;
-the agent writes HTML there, or a markdown summary at the same path with `.md`.
+the agent writes HTML there, or markdown to `$OTTO_REPORT_MD` (same name, `.md`).
 If it wrote neither, ottobot writes a stub `.md` from the run's status and final
 message. The TUI shows `⎙ report` (`o` opens it; history rows carry `⎙`), the
 tray has a `Reports ▸` menu (latest per skill, plus the folder) and a `report`

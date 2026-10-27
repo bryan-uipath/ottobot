@@ -31,9 +31,10 @@ pub fn read() -> Option<Power> {
 
 fn parse(s: &str) -> Option<Power> {
     let first = s.lines().next()?;
+    // Anything other than AC (battery, UPS) means the machine can sleep on us.
     let on_ac = if first.contains("'AC Power'") {
         true
-    } else if first.contains("'Battery Power'") {
+    } else if first.contains("drawing from '") {
         false
     } else {
         return None;
@@ -53,6 +54,7 @@ mod tests {
         let s = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t43%; discharging; 3:10 remaining present: true\n";
         assert_eq!(parse(s), Some(Power { on_ac: false, percent: Some(43) }));
         assert_eq!(parse("Now drawing from 'AC Power'\n"), Some(Power { on_ac: true, percent: None }));
+        assert_eq!(parse("Now drawing from 'UPS Power'\n"), Some(Power { on_ac: false, percent: None }));
         assert_eq!(parse("garbage"), None);
     }
 }

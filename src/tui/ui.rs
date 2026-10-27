@@ -434,14 +434,11 @@ fn draw_history(f: &mut Frame, st: &Snapshot, ui: &mut Ui, area: Rect) {
             let dur = r.finished_at.unwrap_or_else(Local::now) - r.started_at;
             let cost = r.cost_usd.map(|c| format!(" · ${c:.2}")).unwrap_or_default();
             // When · duration · cost; runner/model live in the session header.
-            let rep = if r.report.is_some() { " ⎙" } else { "" };
-            ListItem::new(rail_row(
-                glyph,
-                &r.skill,
-                &format!("{}  {}{cost}{rep}", r.started_at.format("%m-%d %H:%M"), rel_dur(dur)),
-                dim(),
-                w,
-            ))
+            // Reserve the ⎙ marker so truncation never eats it.
+            let avail = w.saturating_sub(NAME_W + 2);
+            let text = format!("{}  {}{cost}", r.started_at.format("%m-%d %H:%M"), rel_dur(dur));
+            let rest = if r.report.is_some() { format!("{} ⎙", fit(&text, avail.saturating_sub(2))) } else { text };
+            ListItem::new(rail_row(glyph, &r.skill, &rest, dim(), w))
         })
         .collect();
     let mut state = ListState::default().with_selected(Some(ui.run_idx));

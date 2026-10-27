@@ -73,26 +73,79 @@ impl Store {
     }
 
     /// Newest first. Runs left `Running` by a crash are reported as failed.
-    pub fn load_runs(&self, limit: usize) -> Vec<Run> {
+    /// `<store>/reports/<id>.html`; the agent may write `.md` beside it instead.
+    pub fn report_path(&self, id: &str) -> PathBuf {
+        self.dir.join("reports").join(format!("{id}.html"))
+    }
+
+    /// Every finished run has a report: the agent's .html, else its .md, else a stub ottobot writes.
+    pub fn finalize_report(&self, m: &mut RunMeta) {
+        let html = self.report_path(&m.id);
+        let md = html.with_extension("md");
+        m.report = if html.is_file() {
+            Some(html)
+        } else if md.is_file() {
+            Some(md)
+        } else {
+            stub_report(&md, m).ok().map(|_| md)
+        };
+    }
+
+    /// Run metadata only, newest first. Runs left `Running` by a crash are finalized here as failed.
+    pub fn load_metas(&self) -> Vec<RunMeta> {
         let Ok(rd) = fs::read_dir(self.dir.join("runs")) else { return vec![] };
-        let mut runs: Vec<Run> = rd
+        let mut metas: Vec<RunMeta> = rd
             .filter_map(Result::ok)
             .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
             .filter_map(|e| {
                 let mut meta: RunMeta = serde_json::from_str(&fs::read_to_string(e.path()).ok()?).ok()?;
                 if meta.status == crate::run::RunStatus::Running {
                     meta.status = crate::run::RunStatus::Failed("interrupted (ottobot exited)".into());
+                    meta.finished_at = meta.finished_at.or(Some(Local::now()));
+                    self.finalize_report(&mut meta);
+                    let _ = self.save_run_meta(&meta);
                 }
-                let events = fs::read_to_string(e.path().with_extension("jsonl"))
-                    .map(|s| s.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
-                    .unwrap_or_default();
-                Some(Run { meta, events })
+                Some(meta)
             })
             .collect();
-        runs.sort_by_key(|a| std::cmp::Reverse(a.meta.started_at));
-        runs.truncate(limit);
-        runs
+        metas.sort_by_key(|a| std::cmp::Reverse(a.started_at));
+        metas
     }
+
+    /// Newest first, with events.
+    pub fn load_runs(&self, limit: usize) -> Vec<Run> {
+        self.load_metas()
+            .into_iter()
+            .take(limit)
+            .map(|meta| {
+                let events = fs::read_to_string(self.dir.join("runs").join(format!("{}.jsonl", meta.id)))
+                    .map(|s| s.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
+                    .unwrap_or_default();
+                Run { meta, events }
+            })
+            .collect()
+    }
+}
+
+/// Minimal markdown report when the agent wrote none: status, model, and its final message.
+fn stub_report(path: &Path, m: &RunMeta) -> std::io::Result<()> {
+    use crate::run::RunStatus;
+    let status = match &m.status {
+        RunStatus::Succeeded => "succeeded".to_string(),
+        RunStatus::Failed(why) => format!("failed: {why}"),
+        RunStatus::Running => "running".to_string(),
+    };
+    let body = format!(
+        "# {} · {}\n\n- run: `{}`\n- status: {status}\n- runner: {}{}\n- started: {}\n\n{}\n",
+        m.skill,
+        m.started_at.format("%Y-%m-%d %H:%M"),
+        m.id,
+        m.runner,
+        m.model.as_ref().map(|x| format!("/{x}")).unwrap_or_default(),
+        m.started_at.to_rfc3339(),
+        m.summary.as_deref().unwrap_or("_the agent left no final message_"),
+    );
+    fs::write(path, body)
 }
 
 /// Exclusive `flock` held for the process lifetime; the kernel releases it on any exit,

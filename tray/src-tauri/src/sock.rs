@@ -46,6 +46,18 @@ pub struct Power {
     pub percent: Option<u8>,
 }
 
+impl Power {
+    /// Same text as the daemon's `Power::summary`.
+    pub fn summary(&self) -> String {
+        let pct = self.percent.map(|p| format!(" {p}%")).unwrap_or_default();
+        if self.on_ac {
+            format!("AC{pct}")
+        } else {
+            format!("battery{pct}")
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageWindow {
     pub label: String,

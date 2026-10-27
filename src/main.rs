@@ -289,9 +289,8 @@ async fn refresh_usage(shared: state::Shared) {
 fn reports(store: &store::Store, skill: Option<&str>, all: bool, open: bool) -> Result<()> {
     let mut seen = std::collections::HashSet::new();
     let runs: Vec<_> = store
-        .load_runs(usize::MAX)
+        .load_metas()
         .into_iter()
-        .map(|r| r.meta)
         .filter(|m| skill.is_none_or(|s| m.skill == s))
         .filter(|m| m.report.as_ref().is_some_and(|p| p.is_file()))
         .filter(|m| all || seen.insert(m.skill.clone()))

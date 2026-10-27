@@ -68,7 +68,7 @@ fn apply_snapshot(app: &AppHandle, st: &Snapshot) {
     let failed = st.runs.iter().filter(|r| matches!(r.status, RunStatus::Failed(_)) && r.started_at >= since).count();
     let running = st.runs.iter().filter(|r| r.status == RunStatus::Running).count();
     let batt = st.power.as_ref().filter(|p| !p.on_ac);
-    let warn = batt.map(|p| format!(" · ⚠ battery{}", p.percent.map(|n| format!(" {n}%")).unwrap_or_default())).unwrap_or_default();
+    let warn = batt.map(|p| format!(" · ⚠ {}", p.summary())).unwrap_or_default();
     tooltip(app, &format!("ottobot · {running} running · {failed} failed{warn}"));
     set_icon(app, batt.is_some());
     let names: Vec<String> = st.skills.iter().map(|v| v.name.clone()).collect();
@@ -76,6 +76,9 @@ fn apply_snapshot(app: &AppHandle, st: &Snapshot) {
     let mut seen = std::collections::HashSet::new();
     let reports: Vec<(String, PathBuf)> =
         st.runs.iter().filter_map(|r| r.report.clone().map(|p| (r.skill.clone(), p))).filter(|(s, _)| seen.insert(s.clone())).collect();
+    let reports: Vec<(String, PathBuf)> = reports.into_iter().filter(|(_, p)| p.is_file()).collect();
+    *t.root.lock().unwrap() = Some(st.root.clone());
+    *t.store_dir.lock().unwrap() = Some(st.store_dir.clone());
     let key = (names.clone(), reports.clone());
     if *t.menu_key.lock().unwrap() != Some(key.clone()) {
         if let (Ok(menu), Some(tray)) = (build_menu(app, &names, &reports), app.tray_by_id(TRAY)) {
@@ -83,8 +86,6 @@ fn apply_snapshot(app: &AppHandle, st: &Snapshot) {
         }
         *t.menu_key.lock().unwrap() = Some(key);
         *t.skills.lock().unwrap() = names;
-        *t.root.lock().unwrap() = Some(st.root.clone());
-        *t.store_dir.lock().unwrap() = Some(st.store_dir.clone());
     }
 }
 
@@ -113,8 +114,12 @@ async fn refresh(app: &AppHandle) -> Result<Snapshot> {
     let res = app.state::<Tray>().snapshot().await;
     match &res {
         Ok(s) => apply_snapshot(app, s),
-        Err(e) if format!("{e:#}").contains(sock::OLD_PROTOCOL) => tooltip(app, &format!("ottobot · {}", sock::OLD_PROTOCOL)),
-        Err(_) => tooltip(app, "ottobot · daemon not running"),
+        Err(e) => {
+            // No daemon → no power data; don't leave a stale battery badge up.
+            set_icon(app, false);
+            let old = format!("{e:#}").contains(sock::OLD_PROTOCOL);
+            tooltip(app, &format!("ottobot · {}", if old { sock::OLD_PROTOCOL } else { "daemon not running" }));
+        }
     }
     res
 }
@@ -198,7 +203,12 @@ async fn run_now(t: State<'_, Tray>, skill: String) -> Result<(), String> {
 #[tauri::command]
 fn open_skills(t: State<'_, Tray>) -> Result<(), String> {
     let root = t.root.lock().unwrap().clone().or_else(|| dirs::home_dir().map(|h| h.join(".ottobot/skills"))).ok_or("no skills root")?;
-    std::process::Command::new("open").arg(root).spawn().map(|_| ()).map_err(|e| e.to_string())
+    open_path(&root)
+}
+
+/// `open <path>` with the default handler, detached.
+fn open_path(p: &std::path::Path) -> Result<(), String> {
+    std::process::Command::new("open").arg(p).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// Open a run's HTML report. Only files under ~/.ottobot, so the webview can't open arbitrary paths.
@@ -210,7 +220,7 @@ fn open_report(path: std::path::PathBuf) -> Result<(), String> {
     if !real.starts_with(&home) || !matches!(real.extension().and_then(|e| e.to_str()), Some("html" | "md")) {
         return Err("not an ottobot report".into());
     }
-    std::process::Command::new("open").arg(real).spawn().map(|_| ()).map_err(|e| e.to_string())
+    open_path(&real)
 }
 
 #[tauri::command]
@@ -235,7 +245,7 @@ async fn menu_action(app: AppHandle, id: String) {
         "skills" => return drop(open_skills(app.state::<Tray>())),
         "reports_dir" => {
             if let Some(d) = app.state::<Tray>().store_dir.lock().unwrap().clone() {
-                let _ = std::process::Command::new("open").arg(d.join("reports")).spawn();
+                let _ = open_path(&d.join("reports"));
             }
             return;
         }
