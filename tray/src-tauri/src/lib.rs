@@ -126,6 +126,9 @@ fn toggle(app: &AppHandle, rect: Rect) -> tauri::Result<()> {
         x = x.min(wa.position.x as f64 + wa.size.width as f64 - w).max(wa.position.x as f64);
     }
     win.set_position(PhysicalPosition::new(x, pos.y + size.height + 4.0 * scale))?;
+    // Caret x in CSS px, so it keeps pointing at the icon when the window is clamped at a screen edge.
+    let caret = (pos.x + size.width / 2.0 - x) / scale;
+    let _ = win.eval(&format!("document.documentElement.style.setProperty('--caret-x','{caret:.0}px')"));
     win.show()?;
     win.set_focus()?;
     win.emit("visible", true)
@@ -153,6 +156,17 @@ async fn run_now(t: State<'_, Tray>, skill: String) -> Result<(), String> {
 fn open_skills(t: State<'_, Tray>) -> Result<(), String> {
     let root = t.root.lock().unwrap().clone().or_else(|| dirs::home_dir().map(|h| h.join(".ottobot/skills"))).ok_or("no skills root")?;
     std::process::Command::new("open").arg(root).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Open a run's HTML report. Only files under ~/.ottobot, so the webview can't open arbitrary paths.
+#[tauri::command]
+fn open_report(path: std::path::PathBuf) -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("no home")?.join(".ottobot");
+    let real = path.canonicalize().map_err(|e| e.to_string())?;
+    if !real.starts_with(&home) || real.extension().and_then(|e| e.to_str()) != Some("html") {
+        return Err("not an ottobot report".into());
+    }
+    std::process::Command::new("open").arg(real).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -190,7 +204,7 @@ async fn menu_action(app: AppHandle, id: String) {
 pub fn run() {
     tauri::Builder::default()
         .manage(Tray::default())
-        .invoke_handler(tauri::generate_handler![snapshot, run_now, open_skills, quit])
+        .invoke_handler(tauri::generate_handler![snapshot, run_now, open_skills, open_report, quit])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);

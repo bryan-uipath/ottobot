@@ -66,7 +66,10 @@
 
 * { box-sizing: border-box; margin: 0; }
 html, body { height: 100%; background: transparent; overflow: hidden; }
-body { font: 13px/1.4 var(--font-sans); color: var(--fg); padding: 10px; -webkit-user-select: none; user-select: none; cursor: default; }
+body { font: 13px/1.4 var(--font-sans); color: var(--fg); padding: 18px 10px 10px; -webkit-user-select: none; user-select: none; cursor: default; }
+/* Caret pointing up at the tray icon; x set from Rust (--caret-x), default centered. */
+body::before, body::after { content: ""; position: absolute; top: 9px; left: var(--caret-x, 50%); transform: translateX(-50%); border: 9px solid transparent; border-top: 0; border-bottom-color: var(--border); }
+body::after { top: 10px; border-bottom-color: var(--bg-1); }
 
 .card { height: 100%; display: flex; flex-direction: column; background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-3); overflow: hidden; }
 .head { display: flex; align-items: baseline; gap: 8px; padding: 14px 16px 10px; border-bottom: 1px solid var(--border); }
@@ -88,6 +91,7 @@ body { font: 13px/1.4 var(--font-sans); color: var(--fg); padding: 10px; -webkit
 .spin { flex: none; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--brand-dim); border-top-color: var(--brand); animation: spin .9s linear infinite; }
 .dot { flex: none; width: 10px; text-align: center; color: var(--fg-light); }
 .x { flex: none; width: 10px; text-align: center; color: var(--err); }
+.sub .report { color: var(--brand); text-decoration: none; }
 .ok { flex: none; width: 10px; text-align: center; color: var(--ok); }
 @keyframes spin { to { transform: rotate(360deg); } }
 

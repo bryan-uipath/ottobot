@@ -332,6 +332,12 @@ async fn handle_key(code: KeyCode, ui: &mut Ui, m: &mut Model, backend: &mut Bac
             }
         }
         KeyCode::Char('l') => ui.show_log = !ui.show_log,
+        // Open the selected run's HTML report with the default handler.
+        KeyCode::Char('o') => {
+            if let Some(p) = ui::selected_run(&m.snap, ui).and_then(|r| r.report.clone()) {
+                let _ = std::process::Command::new("open").arg(p).spawn();
+            }
+        }
         _ => {}
     }
 }

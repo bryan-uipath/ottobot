@@ -36,6 +36,8 @@ pub struct RunMeta {
     pub status: RunStatus,
     #[serde(default)]
     pub summary: Option<String>,
+    #[serde(default)]
+    pub report: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

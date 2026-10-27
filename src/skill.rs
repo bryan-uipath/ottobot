@@ -23,12 +23,34 @@ pub struct Frontmatter {
     pub name: Option<String>,
     pub description: Option<String>,
     pub runner: Option<String>,
-    pub model: Option<String>,
+    /// `opus`, `codex/gpt-6-astra`, a config alias, or a list of those (most quota left wins).
+    pub model: Option<ModelSpec>,
     pub checker_model: Option<String>,
     pub permission_mode: Option<String>,
     pub trigger: TriggerSpec,
     #[serde(default, with = "humantime_serde")]
     pub timeout: Option<Duration>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum ModelSpec {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl ModelSpec {
+    pub fn candidates(&self) -> Vec<String> {
+        match self {
+            ModelSpec::One(s) => vec![s.clone()],
+            ModelSpec::Many(v) => v.clone(),
+        }
+    }
+
+    /// `a | b` for display.
+    pub fn summary(&self) -> String {
+        self.candidates().join(" | ")
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

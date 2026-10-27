@@ -44,7 +44,7 @@ regression, and write a short triage summary.
 |---|---|---|
 | `name` | skill id, used in run ids and state | file stem |
 | `runner` | `claude` or `codex` | `--runner` or config |
-| `model` | passed to the runner | runner default |
+| `model` | `opus`, `codex/gpt-6-astra`, a config alias, or a list — see Routing | runner default |
 | `checker_model` | model for agent-evaluated event triggers | sonnet (claude); runner default otherwise |
 | `permission_mode` | claude `--permission-mode`; for codex, `bypassPermissions` → no sandbox, anything else → `-s <mode>` | `bypassPermissions` |
 | `trigger.cron` | 5- or 6-field cron | |
@@ -54,6 +54,34 @@ regression, and write a short triage summary.
 | `timeout` | kill the run after this | 1h |
 
 Exactly one of `cron` / `event`.
+
+## Routing
+
+`model` names a model on the skill's runner, a `runner/model` pair, or a list of
+either. With a list, the run goes to the candidate whose runner has the most
+quota left (tightest window; unknown usage counts as 50%); ties keep list order.
+The pick is logged (`routed to codex/gpt-6-astra (97% left vs claude 55%)`).
+
+```yaml
+model: [codex/gpt-6-astra@medium, claude/opus@medium]   # whichever has more headroom
+model: tier1                                             # alias from config.json
+```
+
+`@low|medium|high` sets reasoning effort (`claude --effort`, codex
+`model_reasoning_effort`).
+
+## Reports
+
+Every run gets `$OTTO_REPORT` = `<store>/reports/<run-id>.html`. A skill that
+asks for a report should write a single self-contained HTML file there; if the
+file exists when the run ends, the TUI shows `⎙ report` (`o` opens it) and the
+tray shows a `report` link under the skill.
+
+`~/.ottobot/config.json` can define aliases:
+
+```json
+{ "models": { "tier1": ["codex/gpt-6-astra", "claude/opus"], "tier3": ["claude/haiku", "claude/sonnet"] } }
+```
 
 ## Event triggers
 
@@ -199,6 +227,7 @@ skill.rs      discover *.md with trigger frontmatter, hash file + trigger block
 trigger.rs    cron via croner; event spec parsing
 checker.rs    event checks: compile prose → script, run it, agent fallback
 scheduler.rs  tick loop, dedupe gate, spawn + stream runs
+route.rs      model candidates + config aliases → runner/model with the most quota left
 runner/       Runner trait: command(), parse_line() -> RunEvent, preflight(), usage(); claude + codex
 store.rs      ~/.ottobot/projects/<root>/ state, run metadata, event logs
 state.rs      shared in-memory state between scheduler and clients
@@ -216,7 +245,7 @@ tray/         macOS menu-bar client (Tauri v2, static HTML popover) over the dae
 2. ✅ event triggers: compile prose → checker script via sonnet, agent fallback, dedupe key from checker output
 3. `env.repo`: fetch, worktree per run on `ottobot/<skill>/<run-id>`, worktree removed after, branch kept
 4. ✅ codex runner, per-runner preflight + usage
-4b. route by usage: pick runner/model with headroom when a skill allows alternatives
+4b. ✅ route by usage: `model: [a, b]` picks the runner with the most quota left
 5. ✅ headless daemon + `otto status`
 6. ✅ macOS menu-bar tray (daemon client)
 

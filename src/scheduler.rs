@@ -25,6 +25,8 @@ pub struct Scheduler {
     pub store: Store,
     pub tick: Duration,
     pub default_runner: String,
+    /// Model aliases from config, expanded by `route::resolve`.
+    pub aliases: std::collections::HashMap<String, Vec<String>>,
     /// Cron occurrences are evaluated strictly after this; advanced each tick.
     last_eval: DateTime<Local>,
     /// Event checks in flight, and the channel their verdicts come back on.
@@ -34,9 +36,9 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    pub fn new(shared: Shared, store: Store, tick: Duration, default_runner: String) -> Self {
+    pub fn new(shared: Shared, store: Store, tick: Duration, default_runner: String, aliases: std::collections::HashMap<String, Vec<String>>) -> Self {
         let (check_tx, check_rx) = mpsc::unbounded_channel();
-        Self { shared, store, tick, default_runner, last_eval: Local::now(), checking: HashSet::new(), check_tx, check_rx }
+        Self { shared, store, tick, default_runner, aliases, last_eval: Local::now(), checking: HashSet::new(), check_tx, check_rx }
     }
 
     pub async fn run(mut self, mut cmds: mpsc::Receiver<Command>) {
@@ -248,20 +250,31 @@ impl Scheduler {
     }
 
     fn spawn(&self, skill: Skill, id: String, key: &str, context: Option<&str>) -> Result<()> {
-        let runner_name = skill.front.runner.clone().unwrap_or_else(|| self.default_runner.clone());
+        let (root, choice) = {
+            let sh = self.shared.lock().unwrap();
+            let default_runner = skill.front.runner.clone().unwrap_or_else(|| self.default_runner.clone());
+            (sh.root.clone(), crate::route::resolve(skill.front.model.as_ref(), &default_runner, &self.aliases, &sh.runner_usage))
+        };
+        if !choice.why.is_empty() {
+            self.shared.lock().unwrap().log(format!("{}: {}", skill.name, choice.why));
+        }
+        let runner_name = choice.runner;
         let runner = runner::by_name(&runner_name)?;
-        let root = self.shared.lock().unwrap().root.clone();
+        let report = self.store.dir.join("reports").join(format!("{id}.html"));
+        let _ = std::fs::create_dir_all(report.parent().unwrap_or(&self.store.dir));
         let inv = Invocation {
             prompt: build_prompt(&skill, key, context),
             cwd: root,
-            model: skill.front.model.clone(),
+            model: choice.model.clone(),
+            effort: choice.effort.clone(),
             permission_mode: skill.front.permission_mode.clone(),
+            report: Some(report),
         };
         let meta = RunMeta {
             id: id.clone(),
             skill: skill.name.clone(),
             runner: runner_name,
-            model: skill.front.model.clone(),
+            model: choice.model,
             trigger_key: key.to_string(),
             cwd: inv.cwd.clone(),
             started_at: Local::now(),
@@ -271,6 +284,7 @@ impl Scheduler {
             input_tokens: 0,
             output_tokens: 0,
             summary: None,
+            report: None,
         };
         self.store.save_run_meta(&meta)?;
         {
@@ -310,7 +324,8 @@ fn build_prompt(skill: &Skill, key: &str, context: Option<&str>) -> String {
     format!(
         "You are running unattended as an ottobot job for skill `{}` (trigger: {}).{} \
          Do not ask questions; make reasonable decisions and finish. \
-         Never push to a protected branch.\n\n{}",
+         Never push to a protected branch. \
+         If the skill asks for a report, write it as a single self-contained HTML file to the path in $OTTO_REPORT.\n\n{}",
         skill.name, key, ctx, skill.body
     )
 }
@@ -390,5 +405,11 @@ async fn execute(
         }
     }
     let status = child.wait().await?;
+    // Only the file's presence makes it a report; the agent may not have written one.
+    if let Some(p) = inv.report.filter(|p| p.is_file()) {
+        if let Some(r) = shared.lock().unwrap().run_mut(id) {
+            r.meta.report = Some(p);
+        }
+    }
     Ok(ok && status.success())
 }

@@ -1,75 +1,97 @@
 ---
 name: otto
-description: Distill the current conversation into an ottobot skill — a markdown file with a `trigger:` frontmatter that ottobot fires on a schedule or event. Use when the user says "/otto", "make this recurring", "turn this into a scheduled skill", "automate this investigation", or after a one-off investigation (CI failure, flaky test, nightly report) that would be worth repeating unattended.
+description: Author an ottobot skill — a markdown file with a `trigger:` frontmatter that ottobot runs on a cron or event. Use when the user says "/otto", "make this recurring", "create an ottobot skill", "run X every morning", "monitor Y and open PRs", or after a one-off investigation worth repeating unattended. Covers cron syntax, event triggers, model routing (`model: [codex/gpt-6-astra@medium, claude/opus@medium]`), timeouts, and the HTML report convention.
 ---
 
-# /otto — distill this conversation into a triggerable skill
+# /otto — author an ottobot skill
 
-You are turning work done interactively in this conversation into an
-unattended job for [ottobot](https://github.com/bryan-uipath/ottobot).
+Two entry points, same output:
 
-## 1. Decide whether there is a skill here
+- **From a description** ("check the nightly Playwright run every morning and open PRs").
+- **From this conversation** (distill a one-off investigation into a repeatable job).
 
-Look back over the conversation for a task with all three of:
+## 1. Make sure there is a skill here
 
-- **A trigger**: something observable that says "do this now". Either a
-  schedule (nightly, every 30 min) or an event (a CI workflow failed, a PR was
-  opened with a label, a Jira ticket moved to a column).
-- **A repeatable procedure**: steps that would work again next time without a
-  human steering, once the trigger context (run URL, ticket key) is injected.
-- **A definition of done**: a triage comment, a draft PR, a Slack draft, a
-  report file. Unattended runs must end in an artifact, not a conversation.
+Every skill needs all three. If one is missing, ask one question; don't invent it.
 
-If any of the three is missing, say which one and stop. Do not invent a
-trigger to make the conversation fit.
+- **Trigger**: a schedule (cron) or an observable event (a workflow failed, a PR got a label, a Jira ticket moved).
+- **Procedure**: steps that work without a human, once trigger context (run URL, ticket key) is injected.
+- **Done artifact**: a draft PR, a report at `$OTTO_REPORT`, a Slack draft, a file. Unattended runs end in an artifact, not a conversation.
 
-## 2. Write the skill file
-
-Location: the user's ottobot skills root. Default `~/.ottobot/skills/`; check
-`~/.ottobot/config.json` for `skills_root`. Name the file after the task
-(`playwright-ci-triage.md`).
+## 2. Frontmatter reference
 
 ```yaml
 ---
-name: <kebab-case>
-description: <one line>
-model: opus                 # opus for judgment-heavy work, sonnet for mechanical
+name: playwright-nightly            # kebab-case; defaults to file stem
+description: one line
+model: [codex/gpt-6-astra@medium, claude/opus@medium]   # see Models
+runner: claude                      # default runner for bare model names (claude | codex)
+checker_model: sonnet               # event triggers only: model that compiles/evaluates the check
+permission_mode: bypassPermissions  # claude --permission-mode; codex: anything else = `-s <sandbox>`
 trigger:
-  cron: "0 7 * * 1-5"       # OR an event, never both
-  event: "Scheduled run of <workflow url> failed"
-  check_every: 5m           # event only
-  cooldown: 8h              # event only; how long before the same condition re-fires
-timeout: 45m
+  cron: "0 6 * * *"                 # OR event — never both
+  event: "Latest scheduled run of <workflow url> failed"
+  check_every: 5m                   # event only
+  cooldown: 8h                      # event only; min gap before the same condition re-fires
+timeout: 90m                        # kill the run after this (default 1h)
 ---
 ```
 
-Body rules:
+### Cron
 
-- Write it for an agent that has **no memory of this conversation**. Restate
-  what the user already knew: repo, paths, commands, where logs live, what
-  "flake vs regression" meant here, who owns what.
-- Start with the goal, then numbered steps, then the exact "done" artifact and
-  its format. Include a "do not" list for anything the user corrected you on.
-- Reference trigger context abstractly ("the failing run URL provided in the
-  trigger context"), not the specific run from this conversation.
-- Never instruct the agent to push to a protected branch, merge, or send
-  messages on the user's behalf. Draft PRs and draft messages only.
+5 fields `min hour dom month dow` (6 with leading seconds), local time.
 
-## 3. Show the user
+| want | cron |
+|---|---|
+| 6:00 every day | `0 6 * * *` |
+| 5:30 weekdays | `30 5 * * 1-5` |
+| every 15 min | `*/15 * * * *` |
+| hourly at :05 | `5 * * * *` |
+| Monday 9:00 | `0 9 * * 1` |
+| never (manual via `r`) | `0 0 31 2 *` |
 
-Print the full file, then the trigger in one sentence ("fires when …, at most
-once per 8h") and what the run will produce. Ask for one round of edits
-before writing to disk if anything in step 1 was a judgment call.
+Cron dedupes by occurrence: one fire per matching minute, no cooldown by default.
 
-## 4. Verify
+### Events
+
+Write the condition as a concrete, scriptable fact: a workflow URL, a label, a JQL. On first check `checker_model` compiles it to a script that prints `{"fired", "key", "summary"}`; `key` dedupes, `summary` becomes the run's trigger context. Verify with `otto --check <name>`.
+
+### Models
+
+`model` is one candidate or a list. Each candidate is `runner/model@effort`; runner and effort optional.
+
+- `opus` → default runner, model opus. `codex/gpt-6-astra` → codex. `@low|medium|high` → reasoning effort.
+- A **list** routes to the runner with the most quota left at fire time (tightest window; ties keep order). The pick is logged: `routed to codex/gpt-6-astra (93% left vs claude 70%)`.
+- Aliases from `~/.ottobot/config.json` `"models": {"tier1": [...]}` → `model: tier1`.
+
+Pick by job: judgment-heavy investigation → `[codex/gpt-6-astra@medium, claude/opus@medium]`; mechanical/cheap checks → `claude/haiku` or `claude/sonnet`. Check live quota with `otto --usage`.
+
+Model names: claude aliases `opus | sonnet | haiku`; codex IDs from `~/.codex/models_cache.json` (e.g. `gpt-6-astra`, `gpt-6.1-sol`).
+
+### Reports
+
+Every run gets `$OTTO_REPORT` = `~/.ottobot/projects/<root>/reports/<run-id>.html`. If the skill should produce a report, say so in the body ("write a single self-contained HTML report to `$OTTO_REPORT`"). When the file exists at the end, the TUI shows `⎙ report` (`o` opens it) and the tray shows a `report` link.
+
+## 3. Write the body
+
+For an agent with **no memory of this conversation**:
+
+1. Goal in one sentence.
+2. Context it would otherwise have to rediscover: repo path, commands, where logs/artifacts live, who owns what, what "flake vs regression" means here.
+3. Numbered steps. Reference trigger context abstractly ("the run URL in the trigger context").
+4. The done artifact and its exact format (draft PR title/body shape, report sections).
+5. A "do not" list: never push to protected branches, never merge, never send messages — drafts only.
+
+## 4. Write, show, verify
+
+Location: skills root — `~/.ottobot/config.json` `skills_root`, else `~/.ottobot/skills/`. File `<name>.md`.
+
+Print the file, then one sentence: when it fires, what it will produce, which models it may use. Then:
 
 ```
-otto --list                      # skill appears with a valid trigger
-otto --check <name>              # event only: compile the checker, print the verdict
-otto --run <name>                # one headless run, events to stdout
+otto --list                 # appears with a valid trigger
+otto --check <name>         # event only: compile + evaluate once
+otto --usage                # quota the router will see
 ```
 
-Report the result of `--list`. For event triggers also run `--check` and show
-the compiled script path and verdict; the event prose should name concrete,
-scriptable facts (a workflow URL, a label, a Jira JQL). Only run `--run` if
-the user asks; it costs real tokens and may act on real systems.
+Only `otto --run <name>` if the user asks; it costs tokens and acts on real systems. If a daemon is running, `--run` goes through it and the run shows up in the TUI/tray.

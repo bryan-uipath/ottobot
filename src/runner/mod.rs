@@ -14,7 +14,11 @@ pub struct Invocation {
     pub prompt: String,
     pub cwd: std::path::PathBuf,
     pub model: Option<String>,
+    /// Reasoning effort (`low|medium|high`), from a `model@effort` candidate.
+    pub effort: Option<String>,
     pub permission_mode: Option<String>,
+    /// Where the agent should write an HTML report, exported as `$OTTO_REPORT`. None for checker runs.
+    pub report: Option<std::path::PathBuf>,
 }
 
 /// One rate-limit window, e.g. claude's 5h session or codex's 7d.
