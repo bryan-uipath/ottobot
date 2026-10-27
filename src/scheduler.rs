@@ -220,6 +220,8 @@ impl Scheduler {
         let entry = st.skills.entry(name.to_string()).or_default();
         let manual = key == "manual";
         // Watch: the notebook already dedupes incidents, and a *different* incident must not wait out a cooldown.
+        // Rate is still bounded by the scheduler, not the model: a fire can only come from a check, checks are
+        // `check_every` apart (3h default) and skipped while a run is active, so at most one run per interval.
         let watch = matches!(trigger, Trigger::Event { watch: true, .. });
         let skip = if active.is_some() {
             Some("already running".to_string())
