@@ -214,7 +214,13 @@ fn draw_strip(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
         (None, Some(e), None) => (format!("✗ {e}"), Style::default().fg(ORANGE)),
         (None, None, pid) => {
             let who = pid.map(|p| format!("daemon {p}")).unwrap_or_else(|| "in-process".into());
-            (format!("{who} · {}", if st.caffeinated { "caffeinated" } else { "not caffeinated" }), dim())
+            let awake = if st.caffeinated { "caffeinated" } else { "not caffeinated" };
+            // On battery the Mac sleeps on lid close regardless of caffeinate: warn.
+            match &st.power {
+                Some(p) if !p.on_ac => (format!("⚠ on {} · {who}", p.summary()), Style::default().fg(ORANGE)),
+                Some(p) => (format!("{who} · {awake} · {}", p.summary()), dim()),
+                None => (format!("{who} · {awake}"), dim()),
+            }
         }
     };
     let left = Line::from(left);

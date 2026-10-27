@@ -21,6 +21,8 @@ struct Tray {
     skills: Mutex<Vec<String>>,
     /// Skills root of the last daemon seen; `Skills` opens it in Finder.
     root: Mutex<Option<std::path::PathBuf>>,
+    /// Which icon is showing (Some(true) = battery badge), to avoid resetting it every poll.
+    icon_warn: Mutex<Option<bool>>,
     /// When blur hid the popover; a tray click right after must not reopen it.
     hidden_at: Mutex<Option<Instant>>,
 }
@@ -57,7 +59,10 @@ fn apply_snapshot(app: &AppHandle, st: &Snapshot) {
     let since = chrono::Local::now() - chrono::Duration::hours(24);
     let failed = st.runs.iter().filter(|r| matches!(r.status, RunStatus::Failed(_)) && r.started_at >= since).count();
     let running = st.runs.iter().filter(|r| r.status == RunStatus::Running).count();
-    tooltip(app, &format!("ottobot · {running} running · {failed} failed"));
+    let batt = st.power.as_ref().filter(|p| !p.on_ac);
+    let warn = batt.map(|p| format!(" · ⚠ battery{}", p.percent.map(|n| format!(" {n}%")).unwrap_or_default())).unwrap_or_default();
+    tooltip(app, &format!("ottobot · {running} running · {failed} failed{warn}"));
+    set_icon(app, batt.is_some());
     let names: Vec<String> = st.skills.iter().map(|v| v.name.clone()).collect();
     if *t.skills.lock().unwrap() != names {
         if let (Ok(menu), Some(tray)) = (build_menu(app, &names), app.tray_by_id(TRAY)) {
@@ -65,6 +70,20 @@ fn apply_snapshot(app: &AppHandle, st: &Snapshot) {
         }
         *t.skills.lock().unwrap() = names;
         *t.root.lock().unwrap() = Some(st.root.clone());
+    }
+}
+
+/// Badged template icon while on battery (runs may be cut short by sleep); plain otherwise.
+fn set_icon(app: &AppHandle, warn: bool) {
+    let t = app.state::<Tray>();
+    if *t.icon_warn.lock().unwrap() == Some(warn) {
+        return;
+    }
+    let bytes: &[u8] = if warn { include_bytes!("../icons/tray-warn.png") } else { include_bytes!("../icons/tray.png") };
+    if let (Ok(img), Some(tray)) = (tauri::image::Image::from_bytes(bytes), app.tray_by_id(TRAY)) {
+        let _ = tray.set_icon(Some(img));
+        let _ = tray.set_icon_as_template(true);
+        *t.icon_warn.lock().unwrap() = Some(warn);
     }
 }
 

@@ -51,7 +51,9 @@ const none = () => el('div', 'none', 'none');
 
 function render(st) {
   const now = Date.now();
-  $('who').textContent = `pid ${st.daemon_pid ?? '?'} · ${basename(st.root)}`;
+  const pw = st.power ? (st.power.on_ac ? ' · AC' : ` · ⚠ battery${st.power.percent != null ? ' ' + st.power.percent + '%' : ''}`) : '';
+  $('who').textContent = `pid ${st.daemon_pid ?? '?'} · ${basename(st.root)}${pw}`;
+  $('who').classList.toggle('warn', !!st.power && !st.power.on_ac);
   const out = [];
 
   out.push(el('div', 'label', 'now'));

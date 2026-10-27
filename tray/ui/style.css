@@ -75,6 +75,7 @@ body::after { top: 10px; border-bottom-color: var(--bg-1); }
 .head { display: flex; align-items: baseline; gap: 8px; padding: 14px 16px 10px; border-bottom: 1px solid var(--border); }
 .title { font-weight: 600; color: var(--fg-emp); }
 .de { color: var(--fg-de); }
+.de.warn { color: var(--warn); }
 .light { color: var(--fg-light); }
 
 .body { flex: 1; overflow-y: auto; padding: 4px 16px 12px; }

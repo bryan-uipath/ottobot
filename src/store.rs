@@ -89,7 +89,7 @@ impl Store {
                 Some(Run { meta, events })
             })
             .collect();
-        runs.sort_by(|a, b| b.meta.started_at.cmp(&a.meta.started_at));
+        runs.sort_by_key(|a| std::cmp::Reverse(a.meta.started_at));
         runs.truncate(limit);
         runs
     }

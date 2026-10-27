@@ -25,6 +25,7 @@ pub struct Snapshot {
     pub runner_usage: crate::runner::RunnerUsage,
     /// Set when served by a daemon; None in-process.
     pub daemon_pid: Option<u32>,
+    pub power: Option<crate::power::Power>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +53,7 @@ pub struct Status {
     pub last_failure: Option<(String, String)>,
     pub next_fire: Option<DateTime<Local>>,
     pub runner_usage: crate::runner::RunnerUsage,
+    pub power: Option<crate::power::Power>,
 }
 
 /// e.g. `{"type":"Events","run":"20260101-120000-x","from":0}`, `{"type":"Status"}`.
@@ -111,6 +113,7 @@ impl AppState {
             runner_health: self.runner_health.clone(),
             runner_usage: self.runner_usage.clone(),
             daemon_pid: self.daemon_pid,
+            power: self.power.clone(),
         }
     }
 
@@ -131,6 +134,7 @@ impl AppState {
                 .map(|r| (r.meta.skill.clone(), r.meta.id.clone())),
             next_fire: self.skills.iter().filter_map(|v| v.next_fire).min(),
             runner_usage: self.runner_usage.clone(),
+            power: self.power.clone(),
         }
     }
 }

@@ -6,6 +6,7 @@ mod client;
 mod config;
 mod daemon;
 mod otto;
+mod power;
 mod proto;
 mod route;
 mod run;
@@ -199,6 +200,7 @@ pub fn start_core(
     let shared: state::Shared = Arc::new(Mutex::new(app));
 
     tokio::spawn(refresh_usage(shared.clone()));
+    tokio::spawn(refresh_power(shared.clone()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(16);
     let sched = scheduler::Scheduler::new(shared.clone(), store, tick, default_runner, aliases);
@@ -242,6 +244,9 @@ async fn status(json: bool) -> Result<()> {
         format!("skills {}", s.skills),
         format!("next fire {}", s.next_fire.map(|t| t.format("%a %H:%M").to_string()).unwrap_or("—".into())),
     ];
+    if let Some(p) = &s.power {
+        parts.push(p.summary());
+    }
     for (name, u) in &s.runner_usage {
         parts.push(match u {
             Ok(w) => format!("{name} {}", runner::summary(w)),
@@ -262,6 +267,15 @@ async fn refresh_usage(shared: state::Shared) {
         .unwrap_or_default();
         shared.lock().unwrap().runner_usage = usage;
         tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+    }
+}
+
+/// Poll the power source every 30s so a switch to battery shows up quickly.
+async fn refresh_power(shared: state::Shared) {
+    loop {
+        let p = tokio::task::spawn_blocking(power::read).await.unwrap_or_default();
+        shared.lock().unwrap().power = p;
+        tokio::time::sleep(Duration::from_secs(30)).await;
     }
 }
 

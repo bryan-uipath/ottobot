@@ -35,6 +35,8 @@ pub struct AppState {
     pub runner_usage: crate::runner::RunnerUsage,
     /// This process's pid when running as `otto daemon`.
     pub daemon_pid: Option<u32>,
+    /// AC vs battery; None when unknown.
+    pub power: Option<crate::power::Power>,
 }
 
 impl AppState {

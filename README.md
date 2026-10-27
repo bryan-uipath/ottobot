@@ -93,6 +93,13 @@ runner; a runner that failed preflight is a last resort.
 { "models": { "tier1": ["codex/gpt-6-astra@medium", "claude/opus@medium"], "tier3": ["claude/haiku"] } }
 ```
 
+## Power
+
+The daemon polls `pmset -g batt` every 30s. On battery the TUI strip and tray
+header turn orange and the tray icon gets a badge: caffeinate only blocks idle
+sleep, so a closed lid still interrupts runs. `otto status` includes the power
+state.
+
 ## Reports
 
 Every run gets `$OTTO_REPORT` = `<store>/reports/<run-id>.html`. A skill that

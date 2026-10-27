@@ -41,6 +41,12 @@ pub struct RunMeta {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Power {
+    pub on_ac: bool,
+    pub percent: Option<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageWindow {
     pub label: String,
     pub used_percent: f64,
@@ -70,6 +76,8 @@ pub struct Snapshot {
     pub runner_health: Vec<(String, Result<String, String>)>,
     pub runner_usage: RunnerUsage,
     pub daemon_pid: Option<u32>,
+    #[serde(default)]
+    pub power: Option<Power>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
