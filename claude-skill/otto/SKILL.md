@@ -26,7 +26,7 @@ name: playwright-nightly            # kebab-case; defaults to file stem
 description: one line
 model: [codex/gpt-6-astra@medium, claude/opus@medium]   # see Models
 runner: claude                      # default runner for bare model names (claude | codex)
-checker_model: sonnet               # event triggers only: model that compiles/evaluates the check
+checker_model: sonnet               # event/watch checks; runs on `runner` (sonnet default only on claude)
 permission_mode: bypassPermissions  # claude --permission-mode; codex: anything else = `-s <sandbox>`
 trigger:
   cron: "0 6 * * *"                 # exactly one of cron / event / watch
@@ -64,7 +64,9 @@ Write the condition as a concrete, scriptable fact: a workflow URL, a label, a J
 going on, updates the notes, and fires `{fired, key, summary}`. The body then runs on the
 heavy `model` list with the same memory. Use it when the condition is "anything strange?"
 rather than a scriptable fact. Body = the investigation + report; tell it to draft (not send)
-any Slack message. Cooldown default 8h; set `check_every: 2h`–`4h`.
+any Slack message. Watch ignores `cooldown` (the notebook dedupes; at most one run per
+`check_every`); `check_every` defaults to 3h; checks get 30 minutes. The watcher reads
+untrusted text, so never let a superfan body send messages or push to shared branches.
 
 ### Models
 
