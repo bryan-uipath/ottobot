@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
     if cli.usage {
         for r in runner::all() {
             let ver = r.preflight().map_err(|e| format!("{e:#}"));
-            let usage = r.usage().map(|u| u.summary()).unwrap_or_else(|e| format!("usage unavailable: {e:#}"));
+            let usage = r.usage().map(|u| runner::summary(&u.windows)).unwrap_or_else(|e| format!("usage unavailable: {e:#}"));
             match ver {
                 Ok(v) => println!("{:<8} ✓ {v:<24} {usage}", r.name()),
                 Err(e) => println!("{:<8} ✗ {e}", r.name()),
@@ -201,7 +201,7 @@ pub fn start_core(root: PathBuf, store: store::Store, tick: Duration, default_ru
 /// Remote backend if a daemon answers for `root`. A daemon serving another root is an error, not a fallback.
 async fn connect_daemon(root: &std::path::Path) -> Result<Option<client::Backend>> {
     let path = client::socket_path()?;
-    let Ok((conn, s)) = client::Conn::probe(&path).await else { return Ok(None) };
+    let Some((conn, s)) = find_or_exit(&path).await else { return Ok(None) };
     if s.root != root {
         eprintln!("otto daemon (pid {}) serves a different root:\n  daemon: {}\n  wanted: {}", s.pid, s.root.display(), root.display());
         std::process::exit(1);
@@ -209,14 +209,19 @@ async fn connect_daemon(root: &std::path::Path) -> Result<Option<client::Backend
     Ok(Some(client::Backend::remote(path, s.root, conn)))
 }
 
+/// `Conn::find`, exiting 1 on a daemon we can't talk to (e.g. older protocol).
+async fn find_or_exit(path: &std::path::Path) -> Option<(client::Conn, proto::Status)> {
+    client::Conn::find(path).await.unwrap_or_else(|e| {
+        eprintln!("{e:#}");
+        std::process::exit(1);
+    })
+}
+
 /// `otto status`: one line (or JSON) from the daemon.
 async fn status(json: bool) -> Result<()> {
-    let s = match client::Conn::probe(&client::socket_path()?).await {
-        Ok((_, s)) => s,
-        Err(_) => {
-            eprintln!("no daemon");
-            std::process::exit(1);
-        }
+    let Some((_, s)) = find_or_exit(&client::socket_path()?).await else {
+        eprintln!("no daemon");
+        std::process::exit(1);
     };
     if json {
         println!("{}", serde_json::to_string(&s)?);
@@ -231,7 +236,7 @@ async fn status(json: bool) -> Result<()> {
     ];
     for (name, u) in &s.runner_usage {
         parts.push(match u {
-            Ok(u) => format!("{name} {u}"),
+            Ok(w) => format!("{name} {}", runner::summary(w)),
             Err(_) => format!("{name} n/a"),
         });
     }
@@ -242,8 +247,8 @@ async fn status(json: bool) -> Result<()> {
 /// Poll runner quota off the UI thread: usage() does network/file IO and may take seconds.
 async fn refresh_usage(shared: state::Shared) {
     loop {
-        let usage = tokio::task::spawn_blocking(|| {
-            runner::all().into_iter().map(|r| (r.name().to_string(), r.usage().map(|u| u.summary()).map_err(|e| format!("{e:#}")))).collect::<Vec<_>>()
+        let usage = tokio::task::spawn_blocking(|| -> runner::RunnerUsage {
+            runner::all().into_iter().map(|r| (r.name().to_string(), r.usage().map(|u| u.windows).map_err(|e| format!("{e:#}")))).collect()
         })
         .await
         .unwrap_or_default();

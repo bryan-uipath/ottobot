@@ -6,6 +6,7 @@ pub mod codex;
 use crate::run::RunEvent;
 use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokio::process::Command;
 
@@ -17,11 +18,28 @@ pub struct Invocation {
 }
 
 /// One rate-limit window, e.g. claude's 5h session or codex's 7d.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageWindow {
     pub label: String,
     pub used_percent: f64,
     pub resets_at: Option<DateTime<Utc>>,
+}
+
+impl UsageWindow {
+    pub fn left_percent(&self) -> f64 {
+        (100.0 - self.used_percent).clamp(0.0, 100.0)
+    }
+}
+
+/// Per-runner quota windows, or why they couldn't be read.
+pub type RunnerUsage = Vec<(String, Result<Vec<UsageWindow>, String>)>;
+
+/// e.g. `5h 63% left · 7d 93% left`.
+pub fn summary(ws: &[UsageWindow]) -> String {
+    if ws.is_empty() {
+        return "no usage data".into();
+    }
+    ws.iter().map(|w| format!("{} {:.0}% left", w.label, w.left_percent())).collect::<Vec<_>>().join(" · ")
 }
 
 #[derive(Debug, Clone, Default)]
@@ -39,13 +57,6 @@ impl Usage {
             }
         }
         self
-    }
-
-    pub fn summary(&self) -> String {
-        if self.windows.is_empty() {
-            return "no usage data".into();
-        }
-        self.windows.iter().map(|w| format!("{} {:.0}%", w.label, w.used_percent)).collect::<Vec<_>>().join(" · ")
     }
 }
 
