@@ -16,6 +16,9 @@ pub struct RunMeta {
     pub skill: String,
     pub runner: String,
     pub model: Option<String>,
+    /// Reasoning effort passed to the runner, when a candidate carried `@effort`.
+    #[serde(default)]
+    pub effort: Option<String>,
     pub trigger_key: String,
     /// Directory the agent runs in (worktree once slice 3 lands, skills root today).
     #[serde(default)]

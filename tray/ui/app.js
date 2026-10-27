@@ -48,6 +48,12 @@ const firstLine = (s) => (s || '').split('\n')[0];
 const basename = (p) => p.split('/').filter(Boolean).pop() || p;
 const row = (glyph, name, rest, ...extra) => el('div', 'row', null, glyph, el('span', 'name', name), el('span', 'rest', rest), ...extra);
 const none = () => el('div', 'none', 'none');
+// Whole element opens the report; buttons inside keep their own handlers.
+const clickable = (node, report) => {
+  node.classList.add('link');
+  node.title = 'open report';
+  node.onclick = (e) => { if (e.target.tagName !== 'BUTTON') invoke('open_report', { path: report }); };
+};
 
 function render(st) {
   const now = Date.now();
@@ -74,13 +80,15 @@ function render(st) {
   for (const r of st.runs) {
     if (!r.status.Failed || Date.parse(r.started_at) < since) continue;
     const end = r.finished_at ? Date.parse(r.finished_at) : now;
-    attn.push([r.skill, firstLine(r.status.Failed), `\u00a0· ${dur(end - Date.parse(r.started_at))}`]);
+    attn.push([r.skill, firstLine(r.status.Failed), `\u00a0· ${dur(end - Date.parse(r.started_at))}`, r.report]);
   }
   if (!attn.length) out.push(none());
-  // `<reason> · <duration>`: the reason truncates, the duration never does.
-  for (const [name, why, tail] of attn) {
-    out.push(el('div', 'row', null, el('span', 'x', '✗'), el('span', 'name', name),
-      el('span', 'rest split', null, el('span', 'why', why), tail ? el('span', null, tail) : '')));
+  // `<reason> · <duration>`: the reason truncates, the duration never does. Rows with a report open it on click.
+  for (const [name, why, tail, report] of attn) {
+    const r = el('div', 'row', null, el('span', 'x', '✗'), el('span', 'name', name),
+      el('span', 'rest split', null, el('span', 'why', why), tail ? el('span', null, tail) : ''));
+    if (report) clickable(r, report);
+    out.push(r);
   }
 
   out.push(el('div', 'label', 'quota'));
@@ -126,10 +134,8 @@ function render(st) {
     if (latest?.summary || latest?.report) {
       const sub = el('div', 'sub', latest.summary ? `↳ ${latest.summary}` : '↳ ');
       if (latest.report) {
-        const a = el('a', 'report', 'report');
-        a.href = '#';
-        a.onclick = (e) => { e.preventDefault(); invoke('open_report', { path: latest.report }); };
-        sub.append(' · ', a);
+        sub.append(' · ', el('span', 'report', 'report ↗'));
+        clickable(sub, latest.report);
       }
       out.push(sub);
     }
