@@ -48,11 +48,14 @@ const firstLine = (s) => (s || '').split('\n')[0];
 const basename = (p) => p.split('/').filter(Boolean).pop() || p;
 const row = (glyph, name, rest, ...extra) => el('div', 'row', null, glyph, el('span', 'name', name), el('span', 'rest', rest), ...extra);
 const none = () => el('div', 'none', 'none');
-// Whole element opens the report; buttons inside keep their own handlers.
+// Whole element opens the report (keyboard too).
 const clickable = (node, report) => {
   node.classList.add('link');
   node.title = 'open report';
-  node.onclick = (e) => { if (e.target.tagName !== 'BUTTON') invoke('open_report', { path: report }); };
+  node.tabIndex = 0;
+  const go = () => invoke('open_report', { path: report });
+  node.onclick = go;
+  node.onkeydown = (e) => { if (e.key === 'Enter') go(); };
 };
 
 function render(st) {
@@ -129,8 +132,8 @@ function render(st) {
     btn.disabled = !!v.active_run;
     btn.onclick = () => invoke('run_now', { skill: v.name }).then(refresh, refresh);
     out.push(row(glyph, v.name, `${when} · ${last}`, btn));
-    // One-line summary of the latest finished run.
-    const latest = st.runs.find(r => r.skill === v.name && r.status !== 'Running');
+    // Running: no stale summary line (NOW shows the live run). Else: latest finished run's summary.
+    const latest = v.active_run ? null : st.runs.find(r => r.skill === v.name && r.status !== 'Running');
     if (latest?.summary || latest?.report) {
       const sub = el('div', 'sub', latest.summary ? `↳ ${latest.summary}` : '↳ ');
       if (latest.report) {

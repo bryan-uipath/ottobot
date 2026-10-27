@@ -50,6 +50,26 @@ pub enum RunEvent {
     Done { ok: bool, summary: String },
 }
 
+impl RunMeta {
+    /// `runner/model@effort`, as much as is known.
+    pub fn agent_label(&self) -> String {
+        format!(
+            "{}{}{}",
+            self.runner,
+            self.model.as_ref().map(|m| format!("/{m}")).unwrap_or_default(),
+            self.effort.as_ref().map(|e| format!("@{e}")).unwrap_or_default()
+        )
+    }
+
+    pub fn status_text(&self) -> String {
+        match &self.status {
+            RunStatus::Succeeded => "succeeded".to_string(),
+            RunStatus::Failed(why) => format!("failed: {why}"),
+            RunStatus::Running => "running".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Run {
     pub meta: RunMeta,

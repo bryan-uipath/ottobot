@@ -141,7 +141,7 @@ pub fn install(root: &Path, store_dir: &Path, extra_args: &[String]) -> Result<(
     require_macos("install");
     let exe = std::env::current_exe()?.canonicalize()?;
     let path = std::env::var("PATH").unwrap_or_default();
-    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let esc = crate::store::html_escape;
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

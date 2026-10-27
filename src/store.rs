@@ -88,7 +88,10 @@ impl Store {
     pub fn finalize_report(&self, m: &mut RunMeta) {
         let html = self.report_path(&m.id);
         let md = html.with_extension("md");
-        if html.is_file() {
+        // An agent-written page wins. A page *we* rendered is derived: re-render if the .md is there, so a
+        // stub written during crash reconciliation never hides the agent's real notes.
+        let ours = fs::read_to_string(&html).map(|s| s.starts_with(RENDERED_MARK)).unwrap_or(false);
+        if html.is_file() && !ours {
             let _ = stamp_html(&html, m);
             m.report = Some(html);
             return;
@@ -141,19 +144,64 @@ impl Store {
 }
 
 /// `.md` → self-contained dark-friendly `.html` (future-dark tokens). Bare URLs become links too.
-pub fn render_markdown(md: &Path, html: &Path, m: &RunMeta) -> std::io::Result<()> {
-    use pulldown_cmark::{html::push_html, Options, Parser};
+fn render_markdown(md: &Path, html: &Path, m: &RunMeta) -> std::io::Result<()> {
+    use pulldown_cmark::{html::push_html, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd};
     let title = format!("{} · {}", m.skill, m.started_at.format("%Y-%m-%d %H:%M"));
     let src = fs::read_to_string(md)?;
-    let mut body = String::new();
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TASKLISTS);
-    push_html(&mut body, Parser::new_ext(&src, opts));
-    let body = autolink(&body);
+    // Raw HTML becomes text (reports quote untrusted logs/Slack); bare URLs in text become links,
+    // except inside an existing link or a code span.
+    let mut in_link = false;
+    let mut in_code = false;
+    let mut events: Vec<Event> = Vec::new();
+    for ev in Parser::new_ext(&src, opts) {
+        match ev {
+            Event::Html(t) | Event::InlineHtml(t) => events.push(Event::Text(t)),
+            Event::Start(Tag::Link { .. }) => {
+                in_link = true;
+                events.push(ev);
+            }
+            Event::End(TagEnd::Link) => {
+                in_link = false;
+                events.push(ev);
+            }
+            Event::Start(Tag::CodeBlock(_)) => {
+                in_code = true;
+                events.push(ev);
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                in_code = false;
+                events.push(ev);
+            }
+            Event::Text(t) if !in_link && !in_code && (t.contains("http://") || t.contains("https://")) => {
+                for piece in split_urls(&t) {
+                    match piece {
+                        Ok(url) => {
+                            let u: CowStr = url.to_string().into();
+                            events.push(Event::Start(Tag::Link {
+                                link_type: LinkType::Autolink,
+                                dest_url: u.clone(),
+                                title: "".into(),
+                                id: "".into(),
+                            }));
+                            events.push(Event::Text(u));
+                            events.push(Event::End(TagEnd::Link));
+                        }
+                        Err(text) => events.push(Event::Text(text.to_string().into())),
+                    }
+                }
+            }
+            other => events.push(other),
+        }
+    }
+    let mut body = String::new();
+    push_html(&mut body, events.into_iter());
     let page = format!(
-        "<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+        "{RENDERED_MARK}<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+         <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:\">\
          <title>{title}</title><style>{REPORT_CSS}</style><main>{meta}{body}</main>",
         title = html_escape(&title),
         meta = meta_block(m),
@@ -161,37 +209,62 @@ pub fn render_markdown(md: &Path, html: &Path, m: &RunMeta) -> std::io::Result<(
     fs::write(html, page)
 }
 
+const RENDERED_MARK: &str = "<!--otto-rendered-->";
+
+/// Split text into plain pieces (Err) and bare http(s) URLs (Ok). Trailing `.,;:` stay text;
+/// a closing `)` ends the URL only when unbalanced.
+fn split_urls(text: &str) -> Vec<Result<&str, &str>> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find("http://").into_iter().chain(rest.find("https://")).min() {
+        if i > 0 {
+            out.push(Err(&rest[..i]));
+        }
+        let tail = &rest[i..];
+        let mut end = tail.find(|c: char| c.is_whitespace() || c == '<' || c == '>' || c == '"' || c == '\'').unwrap_or(tail.len());
+        let mut url = &tail[..end];
+        // Balance parentheses, then drop trailing punctuation.
+        while url.ends_with(')') && url.matches('(').count() < url.matches(')').count() {
+            url = &url[..url.len() - 1];
+        }
+        let trimmed = url.trim_end_matches(['.', ',', ';', ':', '!', '?']);
+        end = trimmed.len();
+        out.push(Ok(trimmed));
+        rest = &tail[end..];
+    }
+    if !rest.is_empty() {
+        out.push(Err(rest));
+    }
+    out
+}
+
 /// Who ran this: skill, run id, status, runner/model@effort, duration, cost. Same text for both report kinds.
 fn meta_block(m: &RunMeta) -> String {
-    use crate::run::RunStatus;
-    let status = match &m.status {
-        RunStatus::Succeeded => "succeeded".to_string(),
-        RunStatus::Failed(why) => format!("failed: {why}"),
-        RunStatus::Running => "running".to_string(),
-    };
-    let agent = format!(
-        "{}{}{}",
-        m.runner,
-        m.model.as_ref().map(|x| format!("/{x}")).unwrap_or_default(),
-        m.effort.as_ref().map(|e| format!("@{e}")).unwrap_or_default()
-    );
-    let dur = m.finished_at.map(|f| (f - m.started_at).num_seconds()).unwrap_or(0);
+    let dur = m.finished_at.map(|f| (f - m.started_at).num_seconds().max(0)).unwrap_or(0);
     let cost = m.cost_usd.map(|c| format!(" · ${c:.2}")).unwrap_or_default();
     let tokens = if m.input_tokens + m.output_tokens > 0 {
-        format!(" · {}k in / {}k out", m.input_tokens / 1000, m.output_tokens / 1000)
+        format!(" · {} in / {} out", kfmt(m.input_tokens), kfmt(m.output_tokens))
     } else {
         String::new()
     };
     format!(
-        "<!--otto-meta--><div class=\"otto-meta\"><b>ottobot</b> · {skill} · <code>{id}</code> · {status} · agent <b>{agent}</b> · {m}m{s:02}s{tokens}{cost} · {started}</div>",
+        "<!--otto-meta--><div class=\"otto-meta\"><b>ottobot</b> · {skill} · <code>{id}</code> · {status} · agent <b>{agent}</b> · {mm}m{ss:02}s{tokens}{cost} · {started}</div>",
         skill = html_escape(&m.skill),
         id = html_escape(&m.id),
-        status = html_escape(&status),
-        agent = html_escape(&agent),
-        m = dur / 60,
-        s = dur % 60,
-        started = m.started_at.format("%Y-%m-%d %H:%M %Z"),
+        status = html_escape(&m.status_text()),
+        agent = html_escape(&m.agent_label()),
+        mm = dur / 60,
+        ss = dur % 60,
+        started = m.started_at.format("%Y-%m-%d %H:%M %:z"),
     )
+}
+
+fn kfmt(n: u64) -> String {
+    if n >= 1000 {
+        format!("{:.1}k", n as f64 / 1000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 /// Agent-written HTML gets the same meta line appended once (before </body> when present).
@@ -208,48 +281,14 @@ fn stamp_html(html: &Path, m: &RunMeta) -> std::io::Result<()> {
     fs::write(html, out)
 }
 
-const META_CSS: &str = ".otto-meta{font:12px/1.5 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:#a4b1b8;border-top:1px solid #33414c;margin-top:28px;padding-top:10px}.otto-meta code{font:11px ui-monospace,Menlo,monospace}";
+// Stamped into agent pages of unknown palette: inherit their text colour, just dimmer.
+const META_CSS: &str = ".otto-meta{font:12px/1.5 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;opacity:.65;border-top:1px solid currentColor;margin-top:28px;padding-top:10px}.otto-meta code{font:11px ui-monospace,Menlo,monospace}";
 
-/// Wrap bare http(s) URLs in text nodes with <a>; leaves existing tags alone.
-fn autolink(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    let mut in_anchor = false;
-    let mut i = 0;
-    let b = html.as_bytes();
-    while i < html.len() {
-        if b[i] == b'<' {
-            in_tag = true;
-            if html[i..].starts_with("<a ") {
-                in_anchor = true;
-            } else if html[i..].starts_with("</a>") {
-                in_anchor = false;
-            }
-        }
-        if !in_tag && !in_anchor && (html[i..].starts_with("http://") || html[i..].starts_with("https://")) {
-            let end = html[i..]
-                .find(|c: char| c.is_whitespace() || c == '<' || c == '"' || c == ')' || c == '\'')
-                .map(|n| i + n)
-                .unwrap_or(html.len());
-            let url = html[i..end].trim_end_matches(['.', ',', ';', ':']);
-            out.push_str(&format!("<a href=\"{url}\">{url}</a>"));
-            i += url.len();
-            continue;
-        }
-        if b[i] == b'>' {
-            in_tag = false;
-        }
-        let ch = html[i..].chars().next().unwrap_or('\0');
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-    out
-}
-
-fn html_escape(s: &str) -> String {
+pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
+// Palette copied from tray/ui/style.css (itself from flow-presentation tokens.css); keep in sync by hand.
 const REPORT_CSS: &str = r#"
 :root{--bg:#131a20;--bg-1:#182027;--bg-2:#273139;--fg:#f4f5f7;--fg-de:#cfd8dd;--fg-light:#a4b1b8;--border:#33414c;--brand:#66adff;--err:#ff8484;--ok:#74c94b;--warn:#f5a623}
 @media (prefers-color-scheme: light){:root{--bg:#eef1f4;--bg-1:#f6f8fa;--bg-2:#fff;--fg:#1b2830;--fg-de:#3d4d57;--fg-light:#5b6b75;--border:#d3dce2;--brand:#0067df;--err:#d64545;--ok:#3f9e2b;--warn:#b9791a}}
@@ -267,19 +306,13 @@ ul,ol{padding-left:1.4em}li+li{margin-top:.2em}hr{border:0;border-top:1px solid 
 
 /// Minimal markdown report when the agent wrote none: status, model, and its final message.
 fn stub_report(path: &Path, m: &RunMeta) -> std::io::Result<()> {
-    use crate::run::RunStatus;
-    let status = match &m.status {
-        RunStatus::Succeeded => "succeeded".to_string(),
-        RunStatus::Failed(why) => format!("failed: {why}"),
-        RunStatus::Running => "running".to_string(),
-    };
     let body = format!(
-        "# {} · {}\n\n- run: `{}`\n- status: {status}\n- runner: {}{}\n- started: {}\n\n{}\n",
+        "# {} · {}\n\n- run: `{}`\n- status: {}\n- agent: {}\n- started: {}\n\n{}\n",
         m.skill,
         m.started_at.format("%Y-%m-%d %H:%M"),
         m.id,
-        m.runner,
-        m.model.as_ref().map(|x| format!("/{x}")).unwrap_or_default(),
+        m.status_text(),
+        m.agent_label(),
         m.started_at.to_rfc3339(),
         m.summary.as_deref().unwrap_or("_the agent left no final message_"),
     );
@@ -306,5 +339,19 @@ impl FileLock {
         let _ = f.set_len(0);
         let _ = write!(f, "{}", std::process::id());
         Ok(Self { _file: file })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn urls_split_cleanly() {
+        let v = split_urls("see https://x.com/a, and (https://en.wikipedia.org/wiki/Rust_(language)) now.");
+        assert_eq!(v[1], Ok("https://x.com/a"));
+        assert_eq!(v[3], Ok("https://en.wikipedia.org/wiki/Rust_(language)"));
+        assert_eq!(v[4], Err(") now."));
+        assert_eq!(split_urls("no links"), vec![Err("no links")]);
     }
 }
