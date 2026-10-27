@@ -72,7 +72,6 @@ impl Store {
         Ok(())
     }
 
-    /// Newest first. Runs left `Running` by a crash are reported as failed.
     /// `<store>/memory/<skill>/`, created on demand. Notes, baselines, open investigations.
     pub fn memory_dir(&self, skill: &str) -> PathBuf {
         let d = self.dir.join("memory").join(skill);

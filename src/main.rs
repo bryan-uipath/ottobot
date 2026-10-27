@@ -373,21 +373,25 @@ async fn check_once(root: &std::path::Path, store: &store::Store, runner: &str, 
     let trigger::Trigger::Event { description, watch, .. } = trigger::Trigger::from_spec(&skill.front.trigger)? else {
         anyhow::bail!("{name} has a cron trigger, nothing to check")
     };
-    let memory = store.memory_dir(&skill.name);
-    let c = checker::Checker {
-        skill,
-        description,
-        dir: store.dir.join("checkers"),
-        cwd: root.to_path_buf(),
-        runner: runner.to_string(),
-        watch,
-        memory,
-    };
-    let out = c.check(0).await?;
+    // A diagnostic check must not rewrite the live notebook the daemon relies on: work on a throwaway copy.
+    let live = store.memory_dir(&skill.name);
+    let memory = std::env::temp_dir().join(format!("otto-check-{}-{}", skill.name, std::process::id()));
+    std::fs::create_dir_all(&memory)?;
+    for e in std::fs::read_dir(&live)?.flatten() {
+        let _ = std::fs::copy(e.path(), memory.join(e.file_name()));
+    }
+    let c = checker::Checker::new(skill, description, watch, store, root, runner).with_memory(memory.clone());
+    let out = c.check(0).await;
+    let _ = std::fs::remove_dir_all(&memory);
+    let out = out?;
     if let Some(e) = &out.script_failed {
         eprintln!("[ottobot] script failed: {e}");
     }
-    eprintln!("[ottobot] mode: {:?}, script: {}", out.mode, c.script_path().display());
+    if watch {
+        eprintln!("[ottobot] mode: {:?} (watch; memory copy discarded, live notes untouched)", out.mode);
+    } else {
+        eprintln!("[ottobot] mode: {:?}, script: {}", out.mode, c.script_path().display());
+    }
     println!("{}", serde_json::to_string(&out.result)?);
     Ok(())
 }
