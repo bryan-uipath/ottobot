@@ -40,6 +40,7 @@ impl Store {
         let key: String = root.to_string_lossy().chars().map(|c| if c == '/' || c == '\\' || c == ' ' { '-' } else { c }).collect();
         let dir = crate::config::home()?.join("projects").join(key);
         fs::create_dir_all(dir.join("runs"))?;
+        fs::create_dir_all(dir.join("reports"))?;
         fs::write(dir.join("root"), root.to_string_lossy().as_bytes())?;
         Ok(Self { dir })
     }

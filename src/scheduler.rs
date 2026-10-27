@@ -253,7 +253,7 @@ impl Scheduler {
         let (root, choice) = {
             let sh = self.shared.lock().unwrap();
             let default_runner = skill.front.runner.clone().unwrap_or_else(|| self.default_runner.clone());
-            (sh.root.clone(), crate::route::resolve(skill.front.model.as_ref(), &default_runner, &self.aliases, &sh.runner_usage))
+            (sh.root.clone(), crate::route::resolve(skill.front.model.as_ref(), &default_runner, &self.aliases, &sh.runner_usage, &sh.runner_health))
         };
         if !choice.why.is_empty() {
             self.shared.lock().unwrap().log(format!("{}: {}", skill.name, choice.why));
@@ -261,14 +261,13 @@ impl Scheduler {
         let runner_name = choice.runner;
         let runner = runner::by_name(&runner_name)?;
         let report = self.store.dir.join("reports").join(format!("{id}.html"));
-        let _ = std::fs::create_dir_all(report.parent().unwrap_or(&self.store.dir));
         let inv = Invocation {
             prompt: build_prompt(&skill, key, context),
             cwd: root,
             model: choice.model.clone(),
             effort: choice.effort.clone(),
             permission_mode: skill.front.permission_mode.clone(),
-            report: Some(report),
+            report: Some(report.clone()),
         };
         let meta = RunMeta {
             id: id.clone(),
@@ -310,6 +309,8 @@ impl Scheduler {
             let mut sh = shared.lock().unwrap();
             sh.finish_run(&id, status.clone());
             if let Some(r) = sh.run_mut(&id) {
+                // Whatever happened (incl. timeout), a report on disk counts.
+                r.meta.report = report.is_file().then_some(report);
                 let _ = store.save_run_meta(&r.meta);
             }
             sh.log(format!("run {id}: {status:?}"));
@@ -347,6 +348,9 @@ async fn execute(
     timeout: Duration,
 ) -> Result<bool> {
     let mut cmd = runner.command(&inv);
+    if let Some(r) = &inv.report {
+        cmd.env("OTTO_REPORT", r);
+    }
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     let mut child = cmd.spawn()?;
     let stdout = child.stdout.take().expect("piped");
@@ -405,11 +409,5 @@ async fn execute(
         }
     }
     let status = child.wait().await?;
-    // Only the file's presence makes it a report; the agent may not have written one.
-    if let Some(p) = inv.report.filter(|p| p.is_file()) {
-        if let Some(r) = shared.lock().unwrap().run_mut(id) {
-            r.meta.report = Some(p);
-        }
-    }
     Ok(ok && status.success())
 }

@@ -26,9 +26,6 @@ impl Runner for Claude {
         if let Some(e) = &inv.effort {
             c.args(["--effort", e]);
         }
-        if let Some(r) = &inv.report {
-            c.env("OTTO_REPORT", r);
-        }
         c
     }
 

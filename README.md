@@ -67,8 +67,18 @@ model: [codex/gpt-6-astra@medium, claude/opus@medium]   # whichever has more hea
 model: tier1                                             # alias from config.json
 ```
 
-`@low|medium|high` sets reasoning effort (`claude --effort`, codex
-`model_reasoning_effort`).
+`@minimal|low|medium|high|xhigh|max` sets reasoning effort (`claude --effort`,
+codex `model_reasoning_effort`); any other `@…` stays part of the model id.
+
+Routing compares **runners**, not models: candidates on the same runner share
+one quota, so list one model per runner. Unknown usage ranks below any known
+runner; a runner that failed preflight is a last resort.
+
+`~/.ottobot/config.json` can define aliases (nested up to 3 levels):
+
+```json
+{ "models": { "tier1": ["codex/gpt-6-astra@medium", "claude/opus@medium"], "tier3": ["claude/haiku"] } }
+```
 
 ## Reports
 
@@ -76,12 +86,6 @@ Every run gets `$OTTO_REPORT` = `<store>/reports/<run-id>.html`. A skill that
 asks for a report should write a single self-contained HTML file there; if the
 file exists when the run ends, the TUI shows `⎙ report` (`o` opens it) and the
 tray shows a `report` link under the skill.
-
-`~/.ottobot/config.json` can define aliases:
-
-```json
-{ "models": { "tier1": ["codex/gpt-6-astra", "claude/opus"], "tier3": ["claude/haiku", "claude/sonnet"] } }
-```
 
 ## Event triggers
 

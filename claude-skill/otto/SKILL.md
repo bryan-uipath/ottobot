@@ -61,10 +61,10 @@ Write the condition as a concrete, scriptable fact: a workflow URL, a label, a J
 `model` is one candidate or a list. Each candidate is `runner/model@effort`; runner and effort optional.
 
 - `opus` → default runner, model opus. `codex/gpt-6-astra` → codex. `@low|medium|high` → reasoning effort.
-- A **list** routes to the runner with the most quota left at fire time (tightest window; ties keep order). The pick is logged: `routed to codex/gpt-6-astra (93% left vs claude 70%)`.
+- A **list** routes to the **runner** with the most quota left at fire time (tightest window; ties keep order). Same-runner candidates share one quota, so list one model per runner. The pick is logged: `routed to codex/gpt-6-astra (93% left vs claude 70%)`.
 - Aliases from `~/.ottobot/config.json` `"models": {"tier1": [...]}` → `model: tier1`.
 
-Pick by job: judgment-heavy investigation → `[codex/gpt-6-astra@medium, claude/opus@medium]`; mechanical/cheap checks → `claude/haiku` or `claude/sonnet`. Check live quota with `otto --usage`.
+Pick by job: judgment-heavy investigation → `[codex/gpt-6-astra@medium, claude/opus@medium]`; mechanical/cheap checks → `claude/haiku`. Check live quota with `otto --usage`.
 
 Model names: claude aliases `opus | sonnet | haiku`; codex IDs from `~/.codex/models_cache.json` (e.g. `gpt-6-astra`, `gpt-6.1-sol`).
 

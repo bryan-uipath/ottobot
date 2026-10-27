@@ -161,7 +161,8 @@ fn open_skills(t: State<'_, Tray>) -> Result<(), String> {
 /// Open a run's HTML report. Only files under ~/.ottobot, so the webview can't open arbitrary paths.
 #[tauri::command]
 fn open_report(path: std::path::PathBuf) -> Result<(), String> {
-    let home = dirs::home_dir().ok_or("no home")?.join(".ottobot");
+    // Canonicalize both sides: ~/.ottobot may itself be a symlink (dotfiles).
+    let home = dirs::home_dir().ok_or("no home")?.join(".ottobot").canonicalize().map_err(|e| e.to_string())?;
     let real = path.canonicalize().map_err(|e| e.to_string())?;
     if !real.starts_with(&home) || real.extension().and_then(|e| e.to_str()) != Some("html") {
         return Err("not an ottobot report".into());

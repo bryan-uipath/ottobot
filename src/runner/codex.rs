@@ -37,9 +37,6 @@ impl Runner for Codex {
         if let Some(e) = &inv.effort {
             c.args(["-c", &format!("model_reasoning_effort=\"{e}\"")]);
         }
-        if let Some(r) = &inv.report {
-            c.env("OTTO_REPORT", r);
-        }
         c.arg(&inv.prompt);
         c
     }
