@@ -5,6 +5,7 @@ mod checker;
 mod client;
 mod config;
 mod daemon;
+mod ledger;
 mod otto;
 mod power;
 mod proto;
@@ -71,6 +72,16 @@ enum Cmd {
     Status {
         #[arg(long)]
         json: bool,
+    },
+    /// A skill's `$OTTO_LEDGER` items (ids it already handled). File ops only; no daemon needed.
+    Ledger {
+        skill: String,
+        /// Forget one item so the trigger sees it again.
+        #[arg(long, value_name = "ID", conflicts_with = "clear")]
+        rm: Option<String>,
+        /// Forget every item (other top-level keys are kept).
+        #[arg(long)]
+        clear: bool,
     },
     /// Reports from past runs, newest first (latest per skill unless --all). Reads the store; no daemon needed.
     Reports {
@@ -170,6 +181,10 @@ async fn main() -> Result<()> {
 
     if let Some(Cmd::Reports { skill, all, open }) = &cli.cmd {
         return reports(&store, skill.as_deref(), *all, *open);
+    }
+
+    if let Some(Cmd::Ledger { skill, rm, clear }) = &cli.cmd {
+        return ledger(&root, &store, skill, rm.as_deref(), *clear);
     }
 
     if let Some(name) = &cli.check {
@@ -327,6 +342,46 @@ fn reports(store: &store::Store, skill: Option<&str>, all: bool, open: bool) -> 
         );
     }
     println!("\n{}", store.dir.join("reports").display());
+    Ok(())
+}
+
+/// `otto ledger`: list, forget one, or clear a skill's handled items.
+fn ledger(root: &std::path::Path, store: &store::Store, name: &str, rm: Option<&str>, clear: bool) -> Result<()> {
+    if !skill::discover(root).0.iter().any(|s| s.name == name) {
+        anyhow::bail!("no skill {name}");
+    }
+    let path = store.ledger_path(name);
+    let mut v = ledger::load(&path)?;
+    let Some(items) = ledger::items(&mut v) else { anyhow::bail!("{}: no items", path.display()) };
+    if let Some(id) = rm {
+        if items.remove(id).is_none() {
+            anyhow::bail!("{id} not in {}", path.display());
+        }
+        println!("removed {id}");
+    } else if clear {
+        println!("cleared {} item(s)", items.len());
+        items.clear();
+    } else {
+        let field = |v: &serde_json::Value| runner::truncate(&v.as_str().map(String::from).unwrap_or_else(|| v.to_string()), 40);
+        for (id, item) in items.iter() {
+            let at = item.get("at").map(field).unwrap_or_else(|| "—".into());
+            let rest: Vec<String> = item
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter(|(k, _)| *k != "at")
+                .take(3)
+                .map(|(k, v)| format!("{k}={}", field(v)))
+                .collect();
+            println!("{id:<24} {at:<26} {}", rest.join(" "));
+        }
+        println!("\n{} item(s) · {}", items.len(), path.display());
+        return Ok(());
+    }
+    // Nothing on disk means nothing to rewrite (and the memory dir may not exist).
+    if path.exists() {
+        ledger::save(&path, &v)?;
+    }
     Ok(())
 }
 

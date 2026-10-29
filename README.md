@@ -68,6 +68,7 @@ regression, and write a short triage summary.
 | `trigger.check_every` | event/watch poll interval | 5m event, 3h watch |
 | `trigger.cooldown` | min gap before the same condition re-fires (ignored by watch) | 8h event, 0 cron |
 | `timeout` | kill the run after this | 1h |
+| `ledger_ttl` | prune `$OTTO_LEDGER` items older than this; `0`/`off` never (see Superfans) | 30d |
 
 Exactly one of `cron` / `event` / `watch`.
 
@@ -100,6 +101,24 @@ actually ran, so a deferred one fires again. The watcher runs on the skill's
 declares severity in `$OTTO_VERDICT` (see Reports); give each skill its own
 "normal" counterexamples so routine noise stays `normal`. Programmatic
 kick: `otto --run <skill>` or `{"type":"RunNow","skill":"…"}` on the socket.
+
+`$OTTO_LEDGER` (`$OTTO_MEMORY/ledger.json`) is "already handled" state, set
+for the body, checker scripts, and the watcher. The body adds each item it
+handles (written atomically); the trigger skips ids already in it:
+
+```json
+{"items": {"<id>": {"at": "<RFC3339>", "pr": "repo#12"}}, "anything": "else"}
+```
+
+The daemon prunes `items` whose `at` is older than `ledger_ttl` (30d) after
+each run and once a day; other keys and fields are kept, items without a
+parseable `at` stay, and a file that doesn't parse is left alone (logged).
+
+```
+otto ledger <skill>              list items (id, at, a few fields)
+otto ledger <skill> --rm <id>    forget one, so the trigger sees it again
+otto ledger <skill> --clear      forget all
+```
 
 Trust: a watcher reads logs, Slack and telemetry, any of which can carry
 injected text, and what it writes to `notes.md` steers later runs. Both prompts
@@ -195,8 +214,8 @@ as Terminal) and notification permission for it (macOS asks on the first one).
 
 On first check, `checker_model` writes a script for the condition to
 `~/.ottobot/projects/<root>/checkers/<skill>-<trigger-hash>` and verifies it
-once. Every `check_every` the script runs (cwd = skills root, `$OTTO_SKILL`
-set) and prints one JSON object:
+once. Every `check_every` the script runs (cwd = skills root, `$OTTO_SKILL`,
+`$OTTO_MEMORY`, `$OTTO_LEDGER` set) and prints one JSON object:
 
 ```json
 {"fired": true, "key": "run-1234", "summary": "playwright-ci #1234 failed: 3 tests"}
