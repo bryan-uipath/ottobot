@@ -60,21 +60,56 @@ regression, and write a short triage summary.
 | `name` | skill id, used in run ids and state | file stem |
 | `runner` | `claude` or `codex` | `--runner` or config |
 | `model` | `opus`, `codex/gpt-6-astra`, a config alias, or a list — see Routing | runner default |
-| `checker_model` | model for agent-evaluated event triggers | sonnet (claude); runner default otherwise |
+| `checker_model` | model for event/watch checks; runs on the skill's `runner` (not quota-routed) | sonnet (claude); runner default otherwise |
 | `permission_mode` | claude `--permission-mode`; for codex, `bypassPermissions` → no sandbox, anything else → `-s <mode>` | `bypassPermissions` |
 | `trigger.cron` | 5- or 6-field cron | |
 | `trigger.event` | prose condition, compiled to a checker script (see below) | |
-| `trigger.check_every` | event poll interval | 5m |
-| `trigger.cooldown` | min gap before the same condition re-fires | 8h event, 0 cron |
+| `trigger.watch` | prose condition judged by the checker agent every `check_every`, with memory (see Superfans) | |
+| `trigger.check_every` | event/watch poll interval | 5m event, 3h watch |
+| `trigger.cooldown` | min gap before the same condition re-fires (ignored by watch) | 8h event, 0 cron |
 | `timeout` | kill the run after this | 1h |
 
-Exactly one of `cron` / `event`.
+Exactly one of `cron` / `event` / `watch`.
+
+## Superfans
+
+A superfan is a skill whose job is to stare at one component and notice what
+alerts miss. Pattern: a cheap watcher (`checker_model`, sonnet by default) runs
+every few hours with a persistent notebook, and only when it sees something new
+does the heavy body run (routed by quota) to investigate and write a report.
+
+```yaml
+model: [codex/gpt-6-astra@medium, claude/opus@medium]   # investigation
+checker_model: sonnet                                    # watcher
+trigger:
+  watch: "Anything anomalous in prod/staging App Insights for Studio Web Flow?"
+  check_every: 3h
+```
+
+`watch` is like `event` but never compiled to a script: the watcher agent reads
+`$OTTO_MEMORY/notes.md` (baselines, known issues, open investigations), compares
+now against it, rewrites it, and answers `{"fired", "key", "summary"}`. The body
+gets the same `$OTTO_MEMORY` (`<store>/memory/<skill>/`), so investigations
+build on each other. Watch fires ignore `cooldown` (the notebook dedupes; a
+different incident must not wait) but stay rate-bounded: at most one run per
+`check_every`, since a fire only comes from a check and checks pause while a
+run is active. `$OTTO_LAST_FIRED_KEY` tells the watcher which incident ottobot
+actually ran, so a deferred one fires again. The watcher runs on the skill's
+`runner` with `checker_model` (sonnet on claude) and gets 30m per check.
+`otto --check <skill>` works on a throwaway copy of the notes. Programmatic
+kick: `otto --run <skill>` or `{"type":"RunNow","skill":"…"}` on the socket.
+
+Trust: a watcher reads logs, Slack and telemetry, any of which can carry
+injected text, and what it writes to `notes.md` steers later runs. Both prompts
+mark fetched content and the notebook as data, not instructions; keep superfan
+bodies to drafts and reports (no sending, no pushing), and glance at
+`<store>/memory/<skill>/notes.md` now and then.
 
 ## Routing
 
 `model` names a model on the skill's runner, a `runner/model` pair, or a list of
 either. With a list, the run goes to the candidate whose runner has the most
-quota left (tightest window; unknown usage counts as 50%); ties keep list order.
+quota left (tightest window; unknown usage ranks below any known runner); ties keep list order.
 The pick is logged (`routed to codex/gpt-6-astra (97% left vs claude 55%)`).
 
 ```yaml
@@ -259,8 +294,8 @@ ln -s "$PWD/claude-skill/otto" ~/.claude/skills/otto
 ```
 skill.rs      discover *.md with trigger frontmatter, hash file + trigger block
 trigger.rs    cron via croner; event spec parsing
-checker.rs    event checks: compile prose → script, run it, agent fallback
 scheduler.rs  tick loop, dedupe gate, spawn + stream runs
+checker.rs    event checks: compile prose → script, run it, agent fallback; `watch` = agent + $OTTO_MEMORY
 route.rs      model candidates + config aliases → runner/model with the most quota left
 runner/       Runner trait: command(), parse_line() -> RunEvent, preflight(), usage(); claude + codex
 store.rs      ~/.ottobot/projects/<root>/ state, run metadata, event logs

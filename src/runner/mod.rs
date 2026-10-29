@@ -19,6 +19,25 @@ pub struct Invocation {
     pub permission_mode: Option<String>,
     /// Where the agent should write an HTML report, exported as `$OTTO_REPORT`. None for checker runs.
     pub report: Option<std::path::PathBuf>,
+    /// Per-skill directory that persists across runs, exported as `$OTTO_MEMORY`.
+    pub memory: Option<std::path::PathBuf>,
+    /// Key of the last fire ottobot accepted for this skill, exported as `$OTTO_LAST_FIRED_KEY` (watch checks).
+    pub last_fired_key: Option<String>,
+}
+
+impl Invocation {
+    /// Env every runner gets; one place so a new variable can't end up on only one path.
+    pub fn apply_env(&self, cmd: &mut Command) {
+        if let Some(r) = &self.report {
+            cmd.env("OTTO_REPORT", r).env("OTTO_REPORT_MD", r.with_extension("md"));
+        }
+        if let Some(m) = &self.memory {
+            cmd.env("OTTO_MEMORY", m);
+        }
+        if let Some(k) = &self.last_fired_key {
+            cmd.env("OTTO_LAST_FIRED_KEY", k);
+        }
+    }
 }
 
 /// One rate-limit window, e.g. claude's 5h session or codex's 7d.

@@ -57,6 +57,8 @@ impl ModelSpec {
 pub struct TriggerSpec {
     pub cron: Option<String>,
     pub event: Option<String>,
+    /// Agent-judged condition ("anything anomalous in prod telemetry?"); never compiled to a script.
+    pub watch: Option<String>,
     #[serde(default, with = "humantime_serde")]
     pub check_every: Option<Duration>,
     #[serde(default, with = "humantime_serde")]
@@ -93,8 +95,9 @@ pub fn discover(root: &Path) -> (Vec<Skill>, Vec<(PathBuf, String)>) {
 
 fn parse(path: &Path, front_text: &str, body: &str, full: &str) -> Result<Skill> {
     let front: Frontmatter = serde_yaml::from_str(front_text).context("frontmatter")?;
-    if front.trigger.cron.is_none() && front.trigger.event.is_none() {
-        bail!("trigger needs `cron:` or `event:`");
+    let kinds = [front.trigger.cron.is_some(), front.trigger.event.is_some(), front.trigger.watch.is_some()].iter().filter(|b| **b).count();
+    if kinds != 1 {
+        bail!("trigger needs exactly one of `cron:`, `event:`, `watch:`");
     }
     let trigger_yaml: serde_yaml::Value = serde_yaml::from_str(front_text)?;
     let trigger_text = serde_yaml::to_string(&trigger_yaml["trigger"])?;

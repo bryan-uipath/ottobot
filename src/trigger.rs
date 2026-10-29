@@ -8,11 +8,21 @@ use std::time::Duration;
 
 pub const DEFAULT_EVENT_CHECK: Duration = Duration::from_secs(5 * 60);
 pub const DEFAULT_EVENT_COOLDOWN: Duration = Duration::from_secs(8 * 3600);
+/// A watch check is a full agent run; default to a few hours, not minutes.
+pub const DEFAULT_WATCH_CHECK: Duration = Duration::from_secs(3 * 3600);
 
 #[derive(Debug, Clone)]
 pub enum Trigger {
-    Cron { pattern: String, cron: Box<Cron> },
-    Event { description: String, check_every: Duration },
+    Cron {
+        pattern: String,
+        cron: Box<Cron>,
+    },
+    /// `watch`: the checker is always an agent with memory, never a compiled script.
+    Event {
+        description: String,
+        check_every: Duration,
+        watch: bool,
+    },
 }
 
 impl Trigger {
@@ -21,8 +31,10 @@ impl Trigger {
             let cron = Cron::new(p).with_seconds_optional().parse().with_context(|| format!("cron `{p}`"))?;
             return Ok(Trigger::Cron { pattern: p.clone(), cron: Box::new(cron) });
         }
-        let description = spec.event.clone().context("no trigger")?;
-        Ok(Trigger::Event { description, check_every: spec.check_every.unwrap_or(DEFAULT_EVENT_CHECK) })
+        let watch = spec.watch.is_some();
+        let description = spec.event.clone().or_else(|| spec.watch.clone()).context("no trigger")?;
+        let default_check = if watch { DEFAULT_WATCH_CHECK } else { DEFAULT_EVENT_CHECK };
+        Ok(Trigger::Event { description, check_every: spec.check_every.unwrap_or(default_check), watch })
     }
 
     /// Cron default is 0 (the schedule is the dedupe). Event default is 8h.
@@ -36,8 +48,8 @@ impl Trigger {
     pub fn summary(&self) -> String {
         match self {
             Trigger::Cron { pattern, .. } => format!("cron {pattern}"),
-            Trigger::Event { description, check_every } => {
-                format!("event every {} · {}", humantime::format_duration(*check_every), description)
+            Trigger::Event { description, check_every, watch } => {
+                format!("{} every {} · {}", if *watch { "watch" } else { "event" }, humantime::format_duration(*check_every), description)
             }
         }
     }
