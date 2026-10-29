@@ -351,7 +351,7 @@ fn ledger(root: &std::path::Path, store: &store::Store, name: &str, rm: Option<&
         anyhow::bail!("no skill {name}");
     }
     let path = store.ledger_path(name);
-    let mut v = ledger::load(&path)?;
+    let (mut v, was) = ledger::load(&path)?;
     let Some(items) = ledger::items(&mut v) else { anyhow::bail!("{}: no items", path.display()) };
     if let Some(id) = rm {
         if items.remove(id).is_none() {
@@ -380,7 +380,7 @@ fn ledger(root: &std::path::Path, store: &store::Store, name: &str, rm: Option<&
     }
     // Nothing on disk means nothing to rewrite (and the memory dir may not exist).
     if path.exists() {
-        ledger::save(&path, &v)?;
+        ledger::save(&path, &v, &was)?;
     }
     Ok(())
 }

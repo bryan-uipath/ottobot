@@ -11,17 +11,26 @@ pub fn path(memory: &Path) -> PathBuf {
     memory.join("ledger.json")
 }
 
-/// Parsed file; missing → empty. Errors on bad JSON or non-object `items` so callers never overwrite it.
-pub fn load(path: &Path) -> Result<Value> {
-    let v: Value = match std::fs::read_to_string(path) {
-        Ok(s) => serde_json::from_str(&s).with_context(|| format!("parse {}", path.display()))?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Object(Map::new()),
-        Err(e) => return Err(e.into()),
+/// Parsed file plus its raw text (for `save`'s change check); missing → empty.
+/// Errors on bad JSON or non-object `items` so callers never overwrite it.
+pub fn load(path: &Path) -> Result<(Value, String)> {
+    let raw = read(path)?;
+    let v: Value = if raw.is_empty() {
+        Value::Object(Map::new())
+    } else {
+        serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?
     };
     if !v.is_object() || v.get("items").is_some_and(|i| !i.is_object()) {
         anyhow::bail!("{}: expected {{\"items\": {{...}}}}", path.display());
     }
-    Ok(v)
+    Ok((v, raw))
+}
+
+fn read(path: &Path) -> Result<String> {
+    match std::fs::read_to_string(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        r => Ok(r?),
+    }
 }
 
 /// `items`, created if absent. None only for a value `load` would have rejected.
@@ -29,11 +38,16 @@ pub fn items(v: &mut Value) -> Option<&mut Map<String, Value>> {
     v.as_object_mut()?.entry("items").or_insert_with(|| Value::Object(Map::new())).as_object_mut()
 }
 
-/// Temp file + rename, so a concurrent reader never sees a half-written ledger.
-pub fn save(path: &Path, v: &Value) -> Result<()> {
+/// Temp file + rename, so a concurrent reader never sees a half-written ledger. Refuses if the file changed since
+/// `load` returned `was` (e.g. a run recorded an item meanwhile), so that write isn't lost.
+pub fn save(path: &Path, v: &Value, was: &str) -> Result<()> {
     // Per-process tmp name: the CLI and the daemon can save concurrently without renaming each other's file.
     let tmp = path.with_extension(format!("json.otto-tmp-{}", std::process::id()));
     std::fs::write(&tmp, serde_json::to_string_pretty(v)?)?;
+    if read(path)? != was {
+        let _ = std::fs::remove_file(&tmp);
+        anyhow::bail!("{} changed meanwhile; not saved", path.display());
+    }
     std::fs::rename(tmp, path)?;
     Ok(())
 }
@@ -44,7 +58,7 @@ pub fn prune(path: &Path, ttl: Duration, now: DateTime<Utc>) -> Result<usize> {
         return Ok(0);
     }
     let Some(cutoff) = chrono::Duration::from_std(ttl).ok().and_then(|d| now.checked_sub_signed(d)) else { return Ok(0) };
-    let mut v = load(path)?;
+    let (mut v, was) = load(path)?;
     let items = items(&mut v).context("no items")?;
     let before = items.len();
     items.retain(|_, item| {
@@ -53,7 +67,7 @@ pub fn prune(path: &Path, ttl: Duration, now: DateTime<Utc>) -> Result<usize> {
     });
     let removed = before - items.len();
     if removed > 0 {
-        save(path, &v)?;
+        save(path, &v, &was)?;
     }
     Ok(removed)
 }
@@ -67,6 +81,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         path(&d)
+    }
+
+    #[test]
+    fn save_refuses_if_changed_since_load() {
+        let p = tmp("cas");
+        std::fs::write(&p, r#"{"items":{"a":{}}}"#).unwrap();
+        let (mut v, was) = load(&p).unwrap();
+        items(&mut v).unwrap().remove("a");
+        std::fs::write(&p, r#"{"items":{"a":{},"b":{}}}"#).unwrap(); // a run recorded b meanwhile
+        assert!(save(&p, &v, &was).is_err());
+        assert!(std::fs::read_to_string(&p).unwrap().contains("\"b\""), "b kept");
     }
 
     #[test]
