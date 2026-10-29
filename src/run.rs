@@ -26,7 +26,7 @@ pub struct RunMeta {
     /// First line of the runner's final message; shown as the skill's "latest run" one-liner.
     #[serde(default)]
     pub summary: Option<String>,
-    /// HTML report the run wrote to `$OTTO_REPORT`, if any.
+    /// Report file: the agent's `.html`/`.md`, or ottobot's stub `.md`. Set when the run finishes.
     #[serde(default)]
     pub report: Option<std::path::PathBuf>,
     pub cost_usd: Option<f64>,

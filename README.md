@@ -10,6 +10,8 @@ upcoming fires, run history, and live session output.
 
 ![otto TUI](docs/otto-tui.png)
 
+<p><img src="docs/otto-tray.png" width="380" alt="ottobot tray popover"></p>
+
 ## Install
 
 ```sh
@@ -93,12 +95,27 @@ runner; a runner that failed preflight is a last resort.
 { "models": { "tier1": ["codex/gpt-6-astra@medium", "claude/opus@medium"], "tier3": ["claude/haiku"] } }
 ```
 
+## Power
+
+The daemon polls `pmset -g batt` every 30s. On battery the TUI strip and tray
+header turn orange and the tray icon gets a badge: caffeinate only blocks idle
+sleep, so a closed lid still interrupts runs. `otto status` includes the power
+state.
+
 ## Reports
 
-Every run gets `$OTTO_REPORT` = `<store>/reports/<run-id>.html`. A skill that
-asks for a report should write a single self-contained HTML file there; if the
-file exists when the run ends, the TUI shows `⎙ report` (`o` opens it) and the
-tray shows a `report` link under the skill.
+Every run ends with a report. `$OTTO_REPORT` = `<store>/reports/<run-id>.html`;
+the agent writes HTML there, or markdown to `$OTTO_REPORT_MD` (same name, `.md`).
+If it wrote neither, ottobot writes a stub `.md` from the run's status and final
+message. The TUI shows `⎙ report` (`o` opens it; history rows carry `⎙`), the
+tray has a `Reports ▸` menu (latest per skill, plus the folder) and a `report`
+link under each skill, and:
+
+```
+otto reports              latest report per skill
+otto reports --all        every report
+otto reports <skill> --open
+```
 
 ## Event triggers
 

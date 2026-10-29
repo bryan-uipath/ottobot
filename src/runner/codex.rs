@@ -124,7 +124,7 @@ impl Runner for Codex {
             .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("jsonl"))
             .filter_map(|e| e.metadata().ok().and_then(|m| m.modified().ok()).map(|t| (t, e.into_path())))
             .collect();
-        rollouts.sort_by(|a, b| b.0.cmp(&a.0));
+        rollouts.sort_by_key(|a| std::cmp::Reverse(a.0));
         // A just-started session has no token_count yet; fall through to the next newest.
         let rl = rollouts
             .iter()

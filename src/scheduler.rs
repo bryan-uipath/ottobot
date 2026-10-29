@@ -271,14 +271,15 @@ impl Scheduler {
         }
         let runner_name = choice.runner;
         let runner = runner::by_name(&runner_name)?;
-        let report = self.store.dir.join("reports").join(format!("{id}.html"));
+        // `$OTTO_REPORT` is the .html path; a sibling .md is accepted too. Without either, ottobot writes a stub.
+        let report = self.store.report_path(&id);
         let inv = Invocation {
             prompt: build_prompt(&skill, key, context),
             cwd: root,
             model: choice.model.clone(),
             effort: choice.effort.clone(),
             permission_mode: skill.front.permission_mode.clone(),
-            report: Some(report.clone()),
+            report: Some(report),
         };
         let meta = RunMeta {
             id: id.clone(),
@@ -320,8 +321,8 @@ impl Scheduler {
             let mut sh = shared.lock().unwrap();
             sh.finish_run(&id, status.clone());
             if let Some(r) = sh.run_mut(&id) {
-                // Whatever happened (incl. timeout), a report on disk counts.
-                r.meta.report = report.is_file().then_some(report);
+                // Whatever happened (incl. timeout), a report on disk counts; else a stub, so every run has one.
+                store.finalize_report(&mut r.meta);
                 let _ = store.save_run_meta(&r.meta);
             }
             sh.log(format!("run {id}: {status:?}"));
@@ -337,7 +338,9 @@ fn build_prompt(skill: &Skill, key: &str, context: Option<&str>) -> String {
         "You are running unattended as an ottobot job for skill `{}` (trigger: {}).{} \
          Do not ask questions; make reasonable decisions and finish. \
          Never push to a protected branch. \
-         If the skill asks for a report, write it as a single self-contained HTML file to the path in $OTTO_REPORT.\n\n{}",
+         Every run ends with a report: write a single self-contained HTML file to the path in $OTTO_REPORT, \
+         or, if the skill does not call for HTML, a short markdown summary to the path in $OTTO_REPORT_MD. \
+         Say what you did, what you found, and what needs a human.\n\n{}",
         skill.name, key, ctx, skill.body
     )
 }
@@ -360,7 +363,7 @@ async fn execute(
 ) -> Result<bool> {
     let mut cmd = runner.command(&inv);
     if let Some(r) = &inv.report {
-        cmd.env("OTTO_REPORT", r);
+        cmd.env("OTTO_REPORT", r).env("OTTO_REPORT_MD", r.with_extension("md"));
     }
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     let mut child = cmd.spawn()?;

@@ -41,6 +41,24 @@ pub struct RunMeta {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Power {
+    pub on_ac: bool,
+    pub percent: Option<u8>,
+}
+
+impl Power {
+    /// Same text as the daemon's `Power::summary`.
+    pub fn summary(&self) -> String {
+        let pct = self.percent.map(|p| format!(" {p}%")).unwrap_or_default();
+        if self.on_ac {
+            format!("AC{pct}")
+        } else {
+            format!("battery{pct}")
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageWindow {
     pub label: String,
     pub used_percent: f64,
@@ -70,6 +88,9 @@ pub struct Snapshot {
     pub runner_health: Vec<(String, Result<String, String>)>,
     pub runner_usage: RunnerUsage,
     pub daemon_pid: Option<u32>,
+    pub store_dir: PathBuf,
+    #[serde(default)]
+    pub power: Option<Power>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

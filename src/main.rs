@@ -6,6 +6,7 @@ mod client;
 mod config;
 mod daemon;
 mod otto;
+mod power;
 mod proto;
 mod route;
 mod run;
@@ -70,6 +71,17 @@ enum Cmd {
     Status {
         #[arg(long)]
         json: bool,
+    },
+    /// Reports from past runs, newest first (latest per skill unless --all). Reads the store; no daemon needed.
+    Reports {
+        /// Only this skill.
+        skill: Option<String>,
+        /// Every report, not just the latest per skill.
+        #[arg(long)]
+        all: bool,
+        /// Open the newest matching report instead of listing.
+        #[arg(long)]
+        open: bool,
     },
 }
 
@@ -156,6 +168,10 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(Cmd::Reports { skill, all, open }) = &cli.cmd {
+        return reports(&store, skill.as_deref(), *all, *open);
+    }
+
     if let Some(name) = &cli.check {
         return check_once(&root, &store, &default_runner, name).await;
     }
@@ -199,6 +215,7 @@ pub fn start_core(
     let shared: state::Shared = Arc::new(Mutex::new(app));
 
     tokio::spawn(refresh_usage(shared.clone()));
+    tokio::spawn(refresh_power(shared.clone()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(16);
     let sched = scheduler::Scheduler::new(shared.clone(), store, tick, default_runner, aliases);
@@ -242,6 +259,9 @@ async fn status(json: bool) -> Result<()> {
         format!("skills {}", s.skills),
         format!("next fire {}", s.next_fire.map(|t| t.format("%a %H:%M").to_string()).unwrap_or("—".into())),
     ];
+    if let Some(p) = &s.power {
+        parts.push(p.summary());
+    }
     for (name, u) in &s.runner_usage {
         parts.push(match u {
             Ok(w) => format!("{name} {}", runner::summary(w)),
@@ -262,6 +282,50 @@ async fn refresh_usage(shared: state::Shared) {
         .unwrap_or_default();
         shared.lock().unwrap().runner_usage = usage;
         tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+    }
+}
+
+/// `otto reports`: list or open report files recorded in run metadata.
+fn reports(store: &store::Store, skill: Option<&str>, all: bool, open: bool) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    let runs: Vec<_> = store
+        .load_metas()
+        .into_iter()
+        .filter(|m| skill.is_none_or(|s| m.skill == s))
+        .filter(|m| m.report.as_ref().is_some_and(|p| p.is_file()))
+        .filter(|m| all || seen.insert(m.skill.clone()))
+        .collect();
+    if runs.is_empty() {
+        anyhow::bail!("no reports{}", skill.map(|s| format!(" for {s}")).unwrap_or_default());
+    }
+    if open {
+        let Some(p) = runs[0].report.as_ref() else { return Ok(()) };
+        std::process::Command::new("open").arg(p).status()?;
+        return Ok(());
+    }
+    for m in &runs {
+        let status = match &m.status {
+            run::RunStatus::Succeeded => "✓",
+            run::RunStatus::Failed(_) => "✗",
+            run::RunStatus::Running => "…",
+        };
+        println!(
+            "{status} {:<16} {}  {}",
+            m.skill,
+            m.started_at.format("%Y-%m-%d %H:%M"),
+            m.report.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
+        );
+    }
+    println!("\n{}", store.dir.join("reports").display());
+    Ok(())
+}
+
+/// Poll the power source every 30s so a switch to battery shows up quickly.
+async fn refresh_power(shared: state::Shared) {
+    loop {
+        let p = tokio::task::spawn_blocking(power::read).await.unwrap_or_default();
+        shared.lock().unwrap().power = p;
+        tokio::time::sleep(Duration::from_secs(30)).await;
     }
 }
 

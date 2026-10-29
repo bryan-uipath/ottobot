@@ -214,7 +214,13 @@ fn draw_strip(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
         (None, Some(e), None) => (format!("✗ {e}"), Style::default().fg(ORANGE)),
         (None, None, pid) => {
             let who = pid.map(|p| format!("daemon {p}")).unwrap_or_else(|| "in-process".into());
-            (format!("{who} · {}", if st.caffeinated { "caffeinated" } else { "not caffeinated" }), dim())
+            let awake = if st.caffeinated { "caffeinated" } else { "not caffeinated" };
+            // On battery the Mac sleeps on lid close regardless of caffeinate: warn.
+            match &st.power {
+                Some(p) if !p.on_ac => (format!("⚠ on {} · {who}", p.summary()), Style::default().fg(ORANGE)),
+                Some(p) => (format!("{who} · {awake} · {}", p.summary()), dim()),
+                None => (format!("{who} · {awake}"), dim()),
+            }
         }
     };
     let left = Line::from(left);
@@ -428,7 +434,11 @@ fn draw_history(f: &mut Frame, st: &Snapshot, ui: &mut Ui, area: Rect) {
             let dur = r.finished_at.unwrap_or_else(Local::now) - r.started_at;
             let cost = r.cost_usd.map(|c| format!(" · ${c:.2}")).unwrap_or_default();
             // When · duration · cost; runner/model live in the session header.
-            ListItem::new(rail_row(glyph, &r.skill, &format!("{}  {}{cost}", r.started_at.format("%m-%d %H:%M"), rel_dur(dur)), dim(), w))
+            // Reserve the ⎙ marker so truncation never eats it.
+            let avail = w.saturating_sub(NAME_W + 2);
+            let text = format!("{}  {}{cost}", r.started_at.format("%m-%d %H:%M"), rel_dur(dur));
+            let rest = if r.report.is_some() { format!("{} ⎙", fit(&text, avail.saturating_sub(2))) } else { text };
+            ListItem::new(rail_row(glyph, &r.skill, &rest, dim(), w))
         })
         .collect();
     let mut state = ListState::default().with_selected(Some(ui.run_idx));
