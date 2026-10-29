@@ -332,6 +332,12 @@ async fn handle_key(code: KeyCode, ui: &mut Ui, m: &mut Model, backend: &mut Bac
             }
         }
         KeyCode::Char('l') => ui.show_log = !ui.show_log,
+        // Open the selected run's HTML report with the default handler.
+        KeyCode::Char('o') => match ui::selected_run(&m.snap, ui).and_then(|r| r.report.clone()).filter(|p| p.is_file()) {
+            // Silence `open` so its errors never land on the raw-mode screen.
+            Some(p) => drop(std::process::Command::new("open").arg(p).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn()),
+            None => m.action_error = Some((std::time::Instant::now(), "no report for this run".into())),
+        },
         _ => {}
     }
 }

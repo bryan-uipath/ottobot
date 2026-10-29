@@ -456,13 +456,16 @@ fn draw_session(f: &mut Frame, m: &Model, ui: &mut Ui, area: Rect) {
         RunStatus::Succeeded => (format!("✓ succeeded {elapsed}"), Color::Reset),
         RunStatus::Failed(_) => (format!("✗ failed {elapsed}"), ORANGE),
     };
-    let head = Line::from(vec![
+    let mut head = Line::from(vec![
         Span::styled(run.skill.clone(), bold()),
         Span::styled(" · ", dim()),
         Span::styled(status, Style::default().fg(color)),
         Span::styled(" · ", dim()),
         Span::raw(runner_model(run, init_model.as_deref())),
     ]);
+    if run.report.is_some() {
+        head.spans.push(Span::styled(" · ⎙ report (o)", Style::default().fg(ACCENT)));
+    }
     // cwd right-aligned, cut from the left to fit; dropped if under 10 cols remain.
     let room = (area.width as usize).saturating_sub(head.width() + 3);
     let cwd = if run.cwd.as_os_str().is_empty() || room < 10 { String::new() } else { format!("⌂ {}", fit_left(&short_path(&run.cwd), room - 2)) };
@@ -532,6 +535,7 @@ fn draw_footer(f: &mut Frame, ui: &Ui, area: Rect) {
         ("R", "reload"),
         ("h", if ui.history { "board" } else { "history" }),
         ("l", if ui.show_log { "session" } else { "log" }),
+        ("o", "report"),
         ("?", "about"),
         ("q", "quit"),
     ];

@@ -11,6 +11,9 @@ pub struct Config {
     pub runner: Option<String>,
     #[serde(default, with = "humantime_serde")]
     pub tick: Option<std::time::Duration>,
+    /// Model aliases: `"models": {"tier1": ["codex/gpt-6-astra", "claude/opus"]}`; `model: tier1` in a skill.
+    #[serde(default)]
+    pub models: std::collections::HashMap<String, Vec<String>>,
 }
 
 pub fn home() -> Result<PathBuf> {

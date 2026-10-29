@@ -89,7 +89,7 @@ impl AppState {
                     name: v.skill.name.clone(),
                     description: v.skill.front.description.clone(),
                     runner: v.skill.front.runner.clone(),
-                    model: v.skill.front.model.clone(),
+                    model: v.skill.front.model.as_ref().map(|m| m.summary()),
                     trigger: v.trigger.as_ref().map(|t| t.summary()).map_err(Clone::clone),
                     next_fire: v.next_fire,
                     last_fired: v.last_fired,

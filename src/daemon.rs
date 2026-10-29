@@ -21,7 +21,7 @@ fn info_path() -> Result<PathBuf> {
 
 /// Run in the foreground until SIGINT/SIGTERM. Lock order: daemon.lock → scheduler.pid → socket,
 /// so a second daemon can never unlink a live one's socket or double-schedule.
-pub async fn serve(root: PathBuf, store: Store, tick: Duration, default_runner: String) -> Result<()> {
+pub async fn serve(root: PathBuf, store: Store, tick: Duration, default_runner: String, aliases: std::collections::HashMap<String, Vec<String>>) -> Result<()> {
     let mut term = signal(SignalKind::terminate())?;
     let mut int = signal(SignalKind::interrupt())?;
     let home = crate::config::home()?;
@@ -49,7 +49,7 @@ pub async fn serve(root: PathBuf, store: Store, tick: Duration, default_runner: 
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))?;
     }
-    let core = crate::start_core(root.clone(), store, tick, default_runner, sched_lock);
+    let core = crate::start_core(root.clone(), store, tick, default_runner, aliases, sched_lock);
     {
         let mut st = core.shared.lock().unwrap();
         st.daemon_pid = Some(std::process::id());

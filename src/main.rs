@@ -7,6 +7,7 @@ mod config;
 mod daemon;
 mod otto;
 mod proto;
+mod route;
 mod run;
 mod runner;
 mod scheduler;
@@ -131,7 +132,7 @@ async fn main() -> Result<()> {
     }
     init_logging(&store.dir)?;
     if let Some(Cmd::Daemon { .. }) = &cli.cmd {
-        return daemon::serve(root, store, tick, default_runner).await;
+        return daemon::serve(root, store, tick, default_runner, cfg.models.clone()).await;
     }
 
     if cli.list {
@@ -170,7 +171,7 @@ async fn main() -> Result<()> {
         };
     }
     let lock = store.lock_scheduler()?;
-    let core = start_core(root, store, tick, default_runner, lock);
+    let core = start_core(root, store, tick, default_runner, cfg.models.clone(), lock);
     let backend = client::Backend::Local { shared: core.shared.clone(), cmds: core.cmds.clone() };
     match cli.run {
         Some(name) => headless(backend, name).await,
@@ -182,7 +183,7 @@ async fn main() -> Result<()> {
 }
 
 /// Load runs, preflight runners, caffeinate, and spawn the usage refresher and scheduler.
-pub fn start_core(root: PathBuf, store: store::Store, tick: Duration, default_runner: String, lock: store::FileLock) -> Core {
+pub fn start_core(root: PathBuf, store: store::Store, tick: Duration, default_runner: String, aliases: std::collections::HashMap<String, Vec<String>>, lock: store::FileLock) -> Core {
     let mut app = state::AppState { root, store_dir: store.dir.clone(), ..Default::default() };
     app.runs = store.load_runs(200);
     app.runner_health = runner::all().into_iter().map(|r| (r.name().to_string(), r.preflight().map_err(|e| format!("{e:#}")))).collect();
@@ -193,7 +194,7 @@ pub fn start_core(root: PathBuf, store: store::Store, tick: Duration, default_ru
     tokio::spawn(refresh_usage(shared.clone()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(16);
-    let sched = scheduler::Scheduler::new(shared.clone(), store, tick, default_runner);
+    let sched = scheduler::Scheduler::new(shared.clone(), store, tick, default_runner, aliases);
     tokio::spawn(sched.run(rx));
     Core { shared, cmds: tx, caff, _lock: lock }
 }

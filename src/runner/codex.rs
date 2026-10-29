@@ -34,6 +34,9 @@ impl Runner for Codex {
         if let Some(m) = &inv.model {
             c.args(["-m", m]);
         }
+        if let Some(e) = &inv.effort {
+            c.args(["-c", &format!("model_reasoning_effort=\"{e}\"")]);
+        }
         c.arg(&inv.prompt);
         c
     }

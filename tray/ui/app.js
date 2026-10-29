@@ -120,7 +120,16 @@ function render(st) {
     out.push(row(glyph, v.name, `${when} · ${last}`, btn));
     // One-line summary of the latest finished run.
     const latest = st.runs.find(r => r.skill === v.name && r.status !== 'Running');
-    if (latest?.summary) out.push(el('div', 'sub', `↳ ${latest.summary}`));
+    if (latest?.summary || latest?.report) {
+      const sub = el('div', 'sub', latest.summary ? `↳ ${latest.summary}` : '↳ ');
+      if (latest.report) {
+        const a = el('a', 'report', 'report');
+        a.href = '#';
+        a.onclick = (e) => { e.preventDefault(); invoke('open_report', { path: latest.report }); };
+        sub.append(' · ', a);
+      }
+      out.push(sub);
+    }
   }
 
   $('body').replaceChildren(...out);
