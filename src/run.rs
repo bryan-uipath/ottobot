@@ -106,6 +106,11 @@ impl RunMeta {
         )
     }
 
+    /// One-liner under the skill: verdict headline, else the cleaned summary.
+    pub fn line(&self) -> Option<&str> {
+        self.verdict.as_ref().map(|v| v.headline.as_str()).filter(|h| !h.is_empty()).or(self.summary.as_deref())
+    }
+
     pub fn status_text(&self) -> String {
         match &self.status {
             RunStatus::Succeeded => "succeeded".to_string(),
@@ -113,6 +118,30 @@ impl RunMeta {
             RunStatus::Running => "running".to_string(),
         }
     }
+}
+
+/// First meaningful line of the agent's final message as plain text; `[Report saved](/p)` lines are skipped.
+pub fn one_liner(msg: &str) -> Option<String> {
+    const BOILERPLATE: [&str; 4] = ["report saved", "report written", "saved report", "wrote report"];
+    msg.lines()
+        .map(strip_markdown)
+        .find(|l| !l.is_empty() && !BOILERPLATE.iter().any(|b| l.to_lowercase().starts_with(b)))
+        .map(|l| crate::runner::truncate(&l, 200))
+}
+
+/// "## **Done** `x` [PR](u)" → "Done x PR".
+fn strip_markdown(line: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(i) = rest.find('[') {
+        let Some(j) = rest[i..].find("](").map(|j| i + j) else { break };
+        let Some(k) = rest[j..].find(')').map(|k| j + k) else { break };
+        out.push_str(&rest[..i]);
+        out.push_str(&rest[i + 1..j]);
+        rest = &rest[k + 1..];
+    }
+    out.push_str(rest);
+    out.replace(['`'], "").replace("**", "").trim_start_matches(['#', '-', '*', '>', ' ']).trim().to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -124,5 +153,36 @@ pub struct Run {
 impl Run {
     pub fn new_id(skill: &str) -> String {
         format!("{}-{}", Local::now().format("%Y%m%d-%H%M%S"), skill)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_liner_cleans_markdown_and_skips_boilerplate() {
+        assert_eq!(
+            one_liner("[Report saved](/Users/x/r.html)\n\nChecked 20 PRs; all `mergeable`."),
+            Some("Checked 20 PRs; all mergeable.".into())
+        );
+        assert_eq!(one_liner("[Report written](</a b/r.html>)"), None);
+        assert_eq!(one_liner("Report saved to /x/r.html.\n- **3** jobs failed"), Some("3 jobs failed".into()));
+        assert_eq!(one_liner("## 2 failures — [HTML report](/r.html) [x"), Some("2 failures — HTML report [x".into()));
+        assert_eq!(one_liner("  \n"), None);
+    }
+
+    #[test]
+    fn line_prefers_headline() {
+        let mut m: RunMeta = serde_json::from_str(
+            r#"{"id":"r","skill":"s","runner":"claude","model":null,"trigger_key":"k","started_at":"2026-01-01T00:00:00Z",
+                "finished_at":null,"status":"Succeeded","summary":"sum","cost_usd":null,"input_tokens":0,"output_tokens":0}"#,
+        )
+        .unwrap();
+        assert_eq!(m.line(), Some("sum"));
+        m.verdict = Verdict::parse(r#"{"level":"normal","headline":""}"#);
+        assert_eq!(m.line(), Some("sum"), "empty headline falls back");
+        m.verdict = Verdict::parse(r#"{"level":"normal","headline":"all green"}"#);
+        assert_eq!(m.line(), Some("all green"));
     }
 }

@@ -79,7 +79,7 @@ enum Cmd {
         /// Every report, not just the latest per skill.
         #[arg(long)]
         all: bool,
-        /// Open the newest matching report instead of listing.
+        /// Open the newest matching report instead of listing; without a skill, the reports index.
         #[arg(long)]
         open: bool,
     },
@@ -209,7 +209,11 @@ pub fn start_core(
 ) -> Core {
     let mut app = state::AppState { root, store_dir: store.dir.clone(), ..Default::default() };
     app.runs = store.load_runs(200);
-    crate::store::AlertsFile { alerts: app.alerts, notified: app.notified } = store.load_alerts();
+    if let Err(e) = store.write_index() {
+        tracing::warn!("reports index: {e:#}");
+    }
+    crate::store::AlertsFile { alerts: app.alerts, notified: app.notified, dismissed_failures: app.dismissed_failures } =
+        store.load_alerts();
     app.runner_health = runner::all().into_iter().map(|r| (r.name().to_string(), r.preflight().map_err(|e| format!("{e:#}")))).collect();
     let caff = caffeinate::start();
     app.caffeinated = caff.is_some();
@@ -298,6 +302,10 @@ fn reports(store: &store::Store, skill: Option<&str>, all: bool, open: bool) -> 
         .collect();
     if runs.is_empty() {
         anyhow::bail!("no reports{}", skill.map(|s| format!(" for {s}")).unwrap_or_default());
+    }
+    if open && skill.is_none() {
+        std::process::Command::new("open").arg(store.write_index()?).status()?;
+        return Ok(());
     }
     if open {
         let Some(p) = runs[0].report.as_ref() else { return Ok(()) };

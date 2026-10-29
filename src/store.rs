@@ -29,11 +29,13 @@ pub struct State {
     pub skills: HashMap<String, SkillState>,
 }
 
-/// `alerts.json`: alerts plus per-skill last notification (must survive an alert being cleared).
+/// `alerts.json`: alerts, per-skill last notification (must survive an alert being cleared), dismissed failures.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AlertsFile {
     pub alerts: Vec<Alert>,
     pub notified: BTreeMap<String, DateTime<Local>>,
+    #[serde(default)]
+    pub dismissed_failures: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -74,13 +76,14 @@ impl Store {
         let Ok(s) = fs::read_to_string(self.dir.join("alerts.json")) else { return AlertsFile::default() };
         // Pre-notification builds wrote a bare array.
         serde_json::from_str(&s)
-            .or_else(|_| serde_json::from_str(&s).map(|alerts| AlertsFile { alerts, notified: Default::default() }))
+            .or_else(|_| serde_json::from_str(&s).map(|alerts| AlertsFile { alerts, ..Default::default() }))
             .unwrap_or_default()
     }
 
     pub fn save_alerts(&self, st: &AppState) -> Result<()> {
         let tmp = self.dir.join("alerts.json.tmp");
-        fs::write(&tmp, serde_json::to_string_pretty(&AlertsFile { alerts: st.alerts.clone(), notified: st.notified.clone() })?)?;
+        let f = AlertsFile { alerts: st.alerts.clone(), notified: st.notified.clone(), dismissed_failures: st.dismissed_failures.clone() };
+        fs::write(&tmp, serde_json::to_string_pretty(&f)?)?;
         fs::rename(tmp, self.dir.join("alerts.json"))?;
         Ok(())
     }
@@ -134,13 +137,18 @@ impl Store {
 
     /// Run metadata only, newest first. Runs left `Running` by a crash are finalized here as failed.
     pub fn load_metas(&self) -> Vec<RunMeta> {
+        self.read_metas(true)
+    }
+
+    /// `reconcile: false` while the scheduler runs: an on-disk `Running` may be live, not crashed.
+    fn read_metas(&self, reconcile: bool) -> Vec<RunMeta> {
         let Ok(rd) = fs::read_dir(self.dir.join("runs")) else { return vec![] };
         let mut metas: Vec<RunMeta> = rd
             .filter_map(Result::ok)
             .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
             .filter_map(|e| {
                 let mut meta: RunMeta = serde_json::from_str(&fs::read_to_string(e.path()).ok()?).ok()?;
-                if meta.status == crate::run::RunStatus::Running {
+                if reconcile && meta.status == crate::run::RunStatus::Running {
                     meta.status = crate::run::RunStatus::Failed("interrupted (ottobot exited)".into());
                     meta.finished_at = meta.finished_at.or(Some(Local::now()));
                     self.finalize_report(&mut meta);
@@ -151,6 +159,13 @@ impl Store {
             .collect();
         metas.sort_by_key(|a| std::cmp::Reverse(a.started_at));
         metas
+    }
+
+    /// `<store>/reports/index.html`, rebuilt from every run on disk.
+    pub fn write_index(&self) -> Result<PathBuf> {
+        let path = self.dir.join("reports").join("index.html");
+        fs::write(&path, render_index(&self.read_metas(false)))?;
+        Ok(path)
     }
 
     /// Newest first, with events.
@@ -234,6 +249,57 @@ fn render_markdown(md: &Path, html: &Path, m: &RunMeta) -> std::io::Result<()> {
     );
     fs::write(html, page)
 }
+
+/// Latest per skill, then every report newest first. Verdicts are LLM-written: all text escaped.
+fn render_index(metas: &[RunMeta]) -> String {
+    let all: Vec<&RunMeta> = metas.iter().filter(|m| m.report.as_ref().is_some_and(|p| p.is_file())).collect();
+    let mut seen = std::collections::HashSet::new();
+    let latest: String = all.iter().filter(|m| seen.insert(&m.skill)).map(|m| index_row(m)).collect();
+    let rows: String = all.iter().map(|m| index_row(m)).collect();
+    let mut skills: Vec<&str> = seen.into_iter().map(String::as_str).collect();
+    skills.sort();
+    let opts: String = skills.iter().map(|s| format!("<option>{}</option>", attr_escape(s))).collect();
+    let head = "<tr><th>started</th><th>skill</th><th></th><th>verdict</th><th>took</th><th>cost</th><th></th></tr>";
+    // Inline script is ours; everything interpolated is escaped, so 'unsafe-inline' admits nothing else.
+    format!(
+        "<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+         <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'\">\
+         <title>ottobot reports</title><style>{REPORT_CSS}{INDEX_CSS}</style><main><h1>ottobot reports</h1>\
+         <h2>Latest per skill</h2><table>{head}{latest}</table>\
+         <h2>All reports <select id=\"f\"><option value=\"\">all skills</option>{opts}</select></h2><table id=\"all\">{head}{rows}</table></main>\
+         <script>f.onchange=()=>document.querySelectorAll('#all tr[data-skill]').forEach(r=>r.hidden=!!f.value&&r.dataset.skill!==f.value)</script>"
+    )
+}
+
+fn index_row(m: &RunMeta) -> String {
+    use crate::run::RunStatus;
+    let status = match m.status {
+        RunStatus::Succeeded => "<span class=\"ok\">✓</span>",
+        RunStatus::Failed(_) => "<span class=\"bad\">✗</span>",
+        RunStatus::Running => "…",
+    };
+    let verdict = m.verdict.as_ref().map_or("<span class=\"dim\">—</span>".into(), |v| {
+        let lvl = format!("{:?}", v.level).to_lowercase();
+        format!("<span class=\"lvl {lvl}\">{lvl}</span> {}", html_escape(&v.headline))
+    });
+    let dur = m.finished_at.map(|f| (f - m.started_at).num_seconds().max(0)).unwrap_or(0);
+    let cost = m.cost_usd.map(|c| format!("${c:.2}")).unwrap_or_default();
+    // Reports sit beside index.html.
+    let href = m.report.as_ref().and_then(|p| p.file_name()).map(|f| attr_escape(&f.to_string_lossy())).unwrap_or_default();
+    format!(
+        "<tr data-skill=\"{skill}\"><td>{started}</td><td>{skill}</td><td>{status}</td><td>{verdict}</td><td>{mm}m{ss:02}s</td><td>{cost}</td><td><a href=\"{href}\">report</a></td></tr>",
+        skill = attr_escape(&m.skill),
+        started = m.started_at.format("%Y-%m-%d %H:%M"),
+        mm = dur / 60,
+        ss = dur % 60,
+    )
+}
+
+fn attr_escape(s: &str) -> String {
+    html_escape(s).replace('"', "&quot;")
+}
+
+const INDEX_CSS: &str = "main{max-width:1100px}td{white-space:nowrap}td:nth-child(4){white-space:normal}.ok{color:var(--ok)}.bad{color:var(--err)}.dim{color:var(--fg-light)}.lvl{font-size:12px;font-weight:600;text-transform:uppercase}.lvl.normal{color:var(--fg-light)}.lvl.critical{color:var(--warn)}.lvl.immediate{color:var(--err)}select{font:inherit;font-size:13px;margin-left:8px;background:var(--bg-1);color:var(--fg);border:1px solid var(--border);border-radius:6px}";
 
 const RENDERED_MARK: &str = "<!--otto-rendered-->";
 
@@ -477,6 +543,30 @@ mod tests {
         let b = verdict_block(&m);
         assert!(!b.contains("<script") && !b.contains("<img"), "{b}");
         assert!(b.contains("&lt;script&gt;") && b.contains("a&amp;b") && b.contains("otto-critical"));
+    }
+
+    #[test]
+    fn index_escapes_and_lists_latest_per_skill() {
+        let dir = std::env::temp_dir().join(format!("otto-index-test-{}", std::process::id()));
+        fs::create_dir_all(dir.join("reports")).unwrap();
+        let rep = |id: &str| {
+            let p = dir.join("reports").join(format!("{id}.html"));
+            fs::write(&p, "x").unwrap();
+            Some(p)
+        };
+        let mut new = meta("new");
+        (new.report, new.verdict) = (rep("new"), Verdict::parse(r#"{"level":"critical","headline":"<img onerror=x>"}"#));
+        let mut old = meta("old");
+        (old.report, old.started_at) = (rep("old"), new.started_at - chrono::Duration::hours(1));
+        let mut other = meta("other");
+        (other.skill, other.report, other.status) = ("t\"<b>".into(), rep("other"), crate::run::RunStatus::Failed("x".into()));
+        let gone = meta("gone"); // no report file → not listed
+        let page = render_index(&[new, other, old, gone]);
+        assert!(!page.contains("<img") && !page.contains("<b>") && page.contains("&lt;img onerror=x&gt;"), "{page}");
+        let (latest, all) = page.split_once("All reports").unwrap();
+        assert!(latest.contains("href=\"new.html\"") && latest.contains("data-skill=\"t&quot;&lt;b&gt;\"") && !latest.contains("old.html"));
+        assert!(all.contains("old.html") && all.contains("new.html") && !page.contains("gone.html"));
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
