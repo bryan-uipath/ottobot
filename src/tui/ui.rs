@@ -85,7 +85,9 @@ pub fn board(st: &Snapshot) -> Board<'_> {
     let mut attn: Vec<Attn> = st
         .skills
         .iter()
-        .filter_map(|v| v.trigger.as_ref().err().map(|e| Attn::Invalid { label: v.name.clone(), err: e.clone(), skill: Some(v.name.clone()) }))
+        .filter_map(|v| {
+            v.trigger.as_ref().err().map(|e| Attn::Invalid { label: v.name.clone(), err: e.clone(), skill: Some(v.name.clone()) })
+        })
         .collect();
     attn.extend(st.skill_errors.iter().map(|(p, e)| Attn::Invalid { label: file_name(p), err: e.clone(), skill: None }));
     let since = Local::now() - chrono::Duration::hours(24);
@@ -120,7 +122,7 @@ pub fn sel_index(b: &Board, ui: &Ui) -> Option<usize> {
 
 /// Runs shown in history mode, honoring the skill filter. Newest first.
 pub fn visible_runs<'a>(st: &'a Snapshot, ui: &Ui) -> Vec<&'a RunMeta> {
-    st.runs.iter().filter(|r| ui.run_filter.as_deref().map_or(true, |f| r.skill == f)).collect()
+    st.runs.iter().filter(|r| ui.run_filter.as_deref().is_none_or(|f| r.skill == f)).collect()
 }
 
 /// Skill's active run, else its newest.
@@ -162,14 +164,16 @@ pub fn selected_skill(st: &Snapshot, ui: &Ui) -> Option<String> {
 
 pub fn draw(f: &mut Frame, m: &Model, ui: &mut Ui) {
     let area = f.area();
-    let [strip, _, body, footer] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    let [strip, _, body, footer] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area);
     draw_strip(f, m, ui, strip);
     draw_footer(f, ui, footer);
     ui.narrow = area.width < 60;
     if ui.narrow {
         draw_right(f, m, ui, body);
     } else {
-        let [rail, rule, _, right] = Layout::horizontal([Constraint::Length(RAIL_W), Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).areas(body);
+        let [rail, rule, _, right] =
+            Layout::horizontal([Constraint::Length(RAIL_W), Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).areas(body);
         if ui.history {
             draw_history(f, &m.snap, ui, rail);
         } else {
@@ -195,7 +199,11 @@ fn draw_strip(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
         left.push(Span::styled("0 running", dim()));
     }
     left.push(Span::raw("   "));
-    left.push(if b.failed > 0 { Span::styled(format!("✗ {} failed", b.failed), Style::default().fg(ORANGE)) } else { Span::styled("0 failed", dim()) });
+    left.push(if b.failed > 0 {
+        Span::styled(format!("✗ {} failed", b.failed), Style::default().fg(ORANGE))
+    } else {
+        Span::styled("0 failed", dim())
+    });
     if let Some(v) = st.skills.iter().filter(|v| v.next_fire.is_some()).min_by_key(|v| v.next_fire) {
         let when = v.next_fire.map(|t| rel(t - Local::now())).unwrap_or_default();
         left.push(Span::raw(format!("   next {} {when}", v.name)));
@@ -222,7 +230,10 @@ fn draw_strip(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
 /// `NAME ────…` across `w` cols.
 fn header(name: &str, w: usize) -> Line<'static> {
     let rule = "─".repeat(w.saturating_sub(name.chars().count() + 2));
-    Line::from(vec![Span::styled(name.to_string(), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)), Span::styled(format!(" {rule}"), dim())])
+    Line::from(vec![
+        Span::styled(name.to_string(), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" {rule}"), dim()),
+    ])
 }
 
 fn dim_line(s: impl Into<String>) -> Line<'static> {
@@ -252,7 +263,13 @@ fn draw_board(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
         if ui.rail == Pane::Now && at == Some(i) {
             sel = Some(lines.len());
         }
-        lines.push(rail_row(spin_span(ui.frame), &r.skill, &format!("{} · {}", clock(now - r.started_at), runner_model(r, None)), Style::default(), w));
+        lines.push(rail_row(
+            spin_span(ui.frame),
+            &r.skill,
+            &format!("{} · {}", clock(now - r.started_at), runner_model(r, None)),
+            Style::default(),
+            w,
+        ));
         let tool = m.events.get(&r.id).and_then(|es| {
             es.iter().rev().find_map(|e| match e {
                 RunEvent::ToolUse { name, summary } => Some(format!("  ⚙ {name}  {summary}")),
@@ -435,7 +452,10 @@ fn draw_session(f: &mut Frame, m: &Model, ui: &mut Ui, area: Rect) {
         let invalid = b.attn.iter().find(|a| ui.attn_sel.as_ref() == Some(&a.key()));
         let text = match (ui.history, ui.rail, invalid) {
             (false, Pane::Attention, Some(Attn::Invalid { label, err, .. })) => {
-                let mut l = vec![Line::from(Span::styled(format!("✗ {label}"), Style::default().fg(ORANGE).add_modifier(Modifier::BOLD))), Line::from("")];
+                let mut l = vec![
+                    Line::from(Span::styled(format!("✗ {label}"), Style::default().fg(ORANGE).add_modifier(Modifier::BOLD))),
+                    Line::from(""),
+                ];
                 l.extend(err.lines().map(|s| Line::from(s.to_string())));
                 Text::from(l)
             }
@@ -468,7 +488,11 @@ fn draw_session(f: &mut Frame, m: &Model, ui: &mut Ui, area: Rect) {
     }
     // cwd right-aligned, cut from the left to fit; dropped if under 10 cols remain.
     let room = (area.width as usize).saturating_sub(head.width() + 3);
-    let cwd = if run.cwd.as_os_str().is_empty() || room < 10 { String::new() } else { format!("⌂ {}", fit_left(&short_path(&run.cwd), room - 2)) };
+    let cwd = if run.cwd.as_os_str().is_empty() || room < 10 {
+        String::new()
+    } else {
+        format!("⌂ {}", fit_left(&short_path(&run.cwd), room - 2))
+    };
     let cw = cwd.chars().count() as u16;
     let show_cwd = cw > 0;
     let [h, _, body] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).areas(area);
@@ -492,9 +516,16 @@ fn draw_session(f: &mut Frame, m: &Model, ui: &mut Ui, area: Rect) {
                 }
                 lines.push(Line::from(""));
             }
-            RunEvent::ToolUse { name, summary } => lines.push(Line::from(vec![Span::styled(format!("⚙ {name} "), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)), Span::styled(summary.clone(), dim())])),
-            RunEvent::ToolResult { summary, is_error } => lines.push(Line::from(Span::styled(format!("  ↳ {summary}"), Style::default().fg(if *is_error { ORANGE } else { DIM })))),
-            RunEvent::Usage { input, output, cost_usd } => lines.push(dim_line(format!("Σ {input} in / {output} out{}", cost_usd.map(|c| format!(" · ${c:.3}")).unwrap_or_default()))),
+            RunEvent::ToolUse { name, summary } => lines.push(Line::from(vec![
+                Span::styled(format!("⚙ {name} "), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+                Span::styled(summary.clone(), dim()),
+            ])),
+            RunEvent::ToolResult { summary, is_error } => {
+                lines.push(Line::from(Span::styled(format!("  ↳ {summary}"), Style::default().fg(if *is_error { ORANGE } else { DIM }))))
+            }
+            RunEvent::Usage { input, output, cost_usd } => {
+                lines.push(dim_line(format!("Σ {input} in / {output} out{}", cost_usd.map(|c| format!(" · ${c:.3}")).unwrap_or_default())))
+            }
             RunEvent::Stderr(s) => lines.push(Line::from(Span::styled(format!("! {s}"), Style::default().fg(ORANGE)))),
             RunEvent::Raw(s) => lines.push(dim_line(s.clone())),
             RunEvent::Done { ok, summary } => {
@@ -522,7 +553,14 @@ fn draw_session(f: &mut Frame, m: &Model, ui: &mut Ui, area: Rect) {
 fn draw_log(f: &mut Frame, st: &Snapshot, area: Rect) {
     let [h, _, body] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).areas(area);
     f.render_widget(Paragraph::new(header("SCHEDULER LOG", h.width as usize)), h);
-    let lines: Vec<Line> = st.log.iter().rev().take(body.height as usize).rev().map(|(t, m)| Line::from(vec![Span::styled(format!("{} ", t.format("%H:%M:%S")), dim()), Span::raw(m.clone())])).collect();
+    let lines: Vec<Line> = st
+        .log
+        .iter()
+        .rev()
+        .take(body.height as usize)
+        .rev()
+        .map(|(t, m)| Line::from(vec![Span::styled(format!("{} ", t.format("%H:%M:%S")), dim()), Span::raw(m.clone())]))
+        .collect();
     f.render_widget(Paragraph::new(lines), body);
 }
 
@@ -559,7 +597,9 @@ fn draw_about(f: &mut Frame, st: &Snapshot, area: Rect) {
     for (name, h) in &st.runner_health {
         info.push(match h {
             Ok(v) => kv(name, v.clone()),
-            Err(e) => Line::from(vec![Span::styled(format!("{name:<10} "), dim()), Span::styled(format!("✗ {e}"), Style::default().fg(ORANGE))]),
+            Err(e) => {
+                Line::from(vec![Span::styled(format!("{name:<10} "), dim()), Span::styled(format!("✗ {e}"), Style::default().fg(ORANGE))])
+            }
         });
     }
     info.push(kv("daemon", st.daemon_pid.map(|p| format!("pid {p}")).unwrap_or_else(|| "in-process".into())));
@@ -573,7 +613,9 @@ fn draw_about(f: &mut Frame, st: &Snapshot, area: Rect) {
         &[("?", "close"), ("q", "quit")],
     ];
     for row in keys {
-        info.push(Line::from(row.iter().flat_map(|(k, v)| [Span::raw(format!("{k:<6}")), Span::styled(format!("{v:<16}"), dim())]).collect::<Vec<_>>()));
+        info.push(Line::from(
+            row.iter().flat_map(|(k, v)| [Span::raw(format!("{k:<6}")), Span::styled(format!("{v:<16}"), dim())]).collect::<Vec<_>>(),
+        ));
     }
     let art_h = if side { otto::height() } else { 0 };
     let h = (art_h.max(info.len() as u16) + 2).min(area.height);
@@ -583,7 +625,13 @@ fn draw_about(f: &mut Frame, st: &Snapshot, area: Rect) {
     let inner = block.inner(rect);
     f.render_widget(block, rect);
     let art_w = if side { otto::WIDTH } else { 0 };
-    let [_, art, _, rest] = Layout::horizontal([Constraint::Length(1), Constraint::Length(art_w), Constraint::Length(if side { 2 } else { 0 }), Constraint::Min(0)]).areas(inner);
+    let [_, art, _, rest] = Layout::horizontal([
+        Constraint::Length(1),
+        Constraint::Length(art_w),
+        Constraint::Length(if side { 2 } else { 0 }),
+        Constraint::Min(0),
+    ])
+    .areas(inner);
     if side {
         f.render_widget(Paragraph::new(otto::text()), art);
     }
@@ -660,7 +708,11 @@ fn short(d: chrono::Duration) -> String {
 /// Elapsed wall clock, e.g. `0:42`, `1:02:03`.
 fn clock(d: chrono::Duration) -> String {
     let s = d.num_seconds().max(0);
-    if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
 }
 
 fn rel_dur(d: chrono::Duration) -> String {

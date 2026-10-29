@@ -11,7 +11,7 @@ pub const DEFAULT_EVENT_COOLDOWN: Duration = Duration::from_secs(8 * 3600);
 
 #[derive(Debug, Clone)]
 pub enum Trigger {
-    Cron { pattern: String, cron: Cron },
+    Cron { pattern: String, cron: Box<Cron> },
     Event { description: String, check_every: Duration },
 }
 
@@ -19,7 +19,7 @@ impl Trigger {
     pub fn from_spec(spec: &TriggerSpec) -> Result<Self> {
         if let Some(p) = &spec.cron {
             let cron = Cron::new(p).with_seconds_optional().parse().with_context(|| format!("cron `{p}`"))?;
-            return Ok(Trigger::Cron { pattern: p.clone(), cron });
+            return Ok(Trigger::Cron { pattern: p.clone(), cron: Box::new(cron) });
         }
         let description = spec.event.clone().context("no trigger")?;
         Ok(Trigger::Event { description, check_every: spec.check_every.unwrap_or(DEFAULT_EVENT_CHECK) })

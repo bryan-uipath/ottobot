@@ -183,7 +183,14 @@ async fn main() -> Result<()> {
 }
 
 /// Load runs, preflight runners, caffeinate, and spawn the usage refresher and scheduler.
-pub fn start_core(root: PathBuf, store: store::Store, tick: Duration, default_runner: String, aliases: std::collections::HashMap<String, Vec<String>>, lock: store::FileLock) -> Core {
+pub fn start_core(
+    root: PathBuf,
+    store: store::Store,
+    tick: Duration,
+    default_runner: String,
+    aliases: std::collections::HashMap<String, Vec<String>>,
+    lock: store::FileLock,
+) -> Core {
     let mut app = state::AppState { root, store_dir: store.dir.clone(), ..Default::default() };
     app.runs = store.load_runs(200);
     app.runner_health = runner::all().into_iter().map(|r| (r.name().to_string(), r.preflight().map_err(|e| format!("{e:#}")))).collect();
@@ -281,7 +288,9 @@ async fn headless(mut backend: client::Backend, name: String) -> Result<()> {
             eprintln!("[ottobot] {m}");
         }
         logged = snap.log.len();
-        let Some(run) = snap.runs.iter().filter(|r| r.skill == name && r.started_at >= asked).max_by_key(|r| r.started_at) else { continue };
+        let Some(run) = snap.runs.iter().filter(|r| r.skill == name && r.started_at >= asked).max_by_key(|r| r.started_at) else {
+            continue;
+        };
         for e in backend.events(&run.id, printed).await? {
             println!("{e:?}");
             printed += 1;

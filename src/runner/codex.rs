@@ -49,19 +49,27 @@ impl Runner for Codex {
         match v["type"].as_str() {
             Some("thread.started") => vec![RunEvent::Init { session: v["thread_id"].as_str().unwrap_or("").to_string(), model: None }],
             Some("item.started") => match item["type"].as_str() {
-                Some("command_execution") => vec![RunEvent::ToolUse { name: "shell".into(), summary: truncate(item["command"].as_str().unwrap_or(""), 160) }],
+                Some("command_execution") => {
+                    vec![RunEvent::ToolUse { name: "shell".into(), summary: truncate(item["command"].as_str().unwrap_or(""), 160) }]
+                }
                 Some("mcp_tool_call") => vec![RunEvent::ToolUse {
                     name: format!("{}/{}", item["server"].as_str().unwrap_or("mcp"), item["tool"].as_str().unwrap_or("?")),
                     summary: truncate(&item["arguments"].to_string(), 160),
                 }],
-                Some("web_search") => vec![RunEvent::ToolUse { name: "web_search".into(), summary: truncate(item["query"].as_str().unwrap_or(""), 160) }],
+                Some("web_search") => {
+                    vec![RunEvent::ToolUse { name: "web_search".into(), summary: truncate(item["query"].as_str().unwrap_or(""), 160) }]
+                }
                 _ => vec![],
             },
             Some("item.completed") => match item["type"].as_str() {
                 Some("agent_message") => {
                     let t = item["text"].as_str().unwrap_or("").to_string();
                     *self.last_message.lock().unwrap() = t.clone();
-                    if t.trim().is_empty() { vec![] } else { vec![RunEvent::Text(t)] }
+                    if t.trim().is_empty() {
+                        vec![]
+                    } else {
+                        vec![RunEvent::Text(t)]
+                    }
                 }
                 Some("command_execution") => vec![RunEvent::ToolResult {
                     summary: truncate(item["aggregated_output"].as_str().unwrap_or(""), 300),
@@ -74,7 +82,10 @@ impl Runner for Codex {
                 Some("file_change") => vec![RunEvent::ToolUse {
                     name: "edit".into(),
                     summary: truncate(
-                        &item["changes"].as_array().map(|a| a.iter().filter_map(|c| c["path"].as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default(),
+                        &item["changes"]
+                            .as_array()
+                            .map(|a| a.iter().filter_map(|c| c["path"].as_str()).collect::<Vec<_>>().join(", "))
+                            .unwrap_or_default(),
                         160,
                     ),
                 }],
@@ -84,11 +95,17 @@ impl Runner for Codex {
             Some("turn.completed") => {
                 let u = &v["usage"];
                 vec![
-                    RunEvent::Usage { input: u["input_tokens"].as_u64().unwrap_or(0), output: u["output_tokens"].as_u64().unwrap_or(0), cost_usd: None },
+                    RunEvent::Usage {
+                        input: u["input_tokens"].as_u64().unwrap_or(0),
+                        output: u["output_tokens"].as_u64().unwrap_or(0),
+                        cost_usd: None,
+                    },
                     RunEvent::Done { ok: true, summary: self.last_message.lock().unwrap().clone() },
                 ]
             }
-            Some("turn.failed") => vec![RunEvent::Done { ok: false, summary: v["error"]["message"].as_str().unwrap_or("turn failed").to_string() }],
+            Some("turn.failed") => {
+                vec![RunEvent::Done { ok: false, summary: v["error"]["message"].as_str().unwrap_or("turn failed").to_string() }]
+            }
             Some("error") => vec![RunEvent::Stderr(v["message"].as_str().unwrap_or("").to_string())],
             _ => vec![],
         }
@@ -138,7 +155,6 @@ impl Runner for Codex {
         Ok(Usage { windows }.expired_reset())
     }
 }
-
 
 #[cfg(test)]
 mod tests {

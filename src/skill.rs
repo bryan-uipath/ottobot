@@ -98,9 +98,7 @@ fn parse(path: &Path, front_text: &str, body: &str, full: &str) -> Result<Skill>
     }
     let trigger_yaml: serde_yaml::Value = serde_yaml::from_str(front_text)?;
     let trigger_text = serde_yaml::to_string(&trigger_yaml["trigger"])?;
-    let name = front.name.clone().unwrap_or_else(|| {
-        path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
-    });
+    let name = front.name.clone().unwrap_or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
     Ok(Skill {
         name,
         path: path.to_path_buf(),

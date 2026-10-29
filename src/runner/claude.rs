@@ -102,7 +102,10 @@ fn oauth_token() -> Result<String> {
     let raw = match std::fs::read_to_string(dirs::home_dir().context("no home")?.join(".claude/.credentials.json")) {
         Ok(s) => s,
         Err(_) => {
-            let out = std::process::Command::new("security").args(["find-generic-password", "-s", "Claude Code-credentials", "-w"]).output().context("keychain")?;
+            let out = std::process::Command::new("security")
+                .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+                .output()
+                .context("keychain")?;
             if !out.status.success() {
                 anyhow::bail!("no Claude Code credentials in keychain");
             }
@@ -119,10 +122,9 @@ fn content_events(content: &Value) -> Vec<RunEvent> {
         .iter()
         .filter_map(|c| match c["type"].as_str() {
             Some("text") => c["text"].as_str().filter(|t| !t.trim().is_empty()).map(|t| RunEvent::Text(t.to_string())),
-            Some("tool_use") => Some(RunEvent::ToolUse {
-                name: c["name"].as_str().unwrap_or("?").to_string(),
-                summary: tool_summary(&c["input"]),
-            }),
+            Some("tool_use") => {
+                Some(RunEvent::ToolUse { name: c["name"].as_str().unwrap_or("?").to_string(), summary: tool_summary(&c["input"]) })
+            }
             Some("tool_result") => Some(RunEvent::ToolResult {
                 summary: truncate(&result_text(&c["content"]), 300),
                 is_error: c["is_error"].as_bool().unwrap_or(false),
@@ -149,4 +151,3 @@ fn result_text(content: &Value) -> String {
         _ => String::new(),
     }
 }
-

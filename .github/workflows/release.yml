@@ -1,0 +1,113 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release (e.g. v0.2.0)"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  # Dispatch: fail before building if the tag doesn't exist.
+  verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: git rev-parse --verify "refs/tags/$TAG^{commit}"
+
+  cli:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, target: aarch64-apple-darwin }
+          # macos-13 (Intel) runners are retired; cross-compile x86_64 on arm64.
+          - { os: macos-14, target: x86_64-apple-darwin }
+          # musl: static binary, no glibc version dependency.
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-musl }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target ${{ matrix.target }} --bin otto
+      - name: Package
+        run: |
+          d="otto-${{ matrix.target }}"
+          mkdir -p "$d/examples"
+          cp "target/${{ matrix.target }}/release/otto" README.md "$d/"
+          [ -f LICENSE ] && cp LICENSE "$d/"
+          cp -R examples/skills "$d/examples/"
+          tar -czf "$d.tar.gz" "$d"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: otto-${{ matrix.target }}
+          path: otto-${{ matrix.target }}.tar.gz
+
+  tray:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: aarch64, target: aarch64-apple-darwin }
+          - { arch: x86_64, target: x86_64-apple-darwin }
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        with:
+          tool: cargo-binstall
+      - run: cargo binstall -y --locked tauri-cli@^2
+      - run: cargo tauri build --target ${{ matrix.target }}
+        working-directory: tray/src-tauri
+      # Ad-hoc signed (signingIdentity "-"), unnotarized. ditto keeps bundle symlinks/xattrs intact.
+      - name: Zip app
+        run: |
+          ditto -c -k --keepParent \
+            "tray/src-tauri/target/${{ matrix.target }}/release/bundle/macos/ottobot tray.app" \
+            "ottobot-tray-${{ matrix.arch }}.app.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tray-${{ matrix.arch }}
+          path: ottobot-tray-${{ matrix.arch }}.app.zip
+
+  release:
+    needs: [cli, tray]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          tag_name: ${{ env.TAG }}
+          generate_release_notes: true
+          files: dist/*

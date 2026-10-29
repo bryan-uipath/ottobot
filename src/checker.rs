@@ -102,7 +102,14 @@ impl Checker {
             path = path.display(),
             body = self.skill.body,
         );
-        let inv = Invocation { prompt, cwd: self.dir.clone(), model: self.checker_model(), effort: None, permission_mode: self.skill.front.permission_mode.clone(), report: None };
+        let inv = Invocation {
+            prompt,
+            cwd: self.dir.clone(),
+            model: self.checker_model(),
+            effort: None,
+            permission_mode: self.skill.front.permission_mode.clone(),
+            report: None,
+        };
         let (ok, summary) = run_to_end(&self.runner, inv, AGENT_TIMEOUT).await?;
         if !ok {
             bail!("compile agent failed: {summary}");
@@ -152,7 +159,14 @@ impl Checker {
             desc = self.description,
             body = self.skill.body,
         );
-        let inv = Invocation { prompt, cwd: self.cwd.clone(), model: self.checker_model(), effort: None, permission_mode: self.skill.front.permission_mode.clone(), report: None };
+        let inv = Invocation {
+            prompt,
+            cwd: self.cwd.clone(),
+            model: self.checker_model(),
+            effort: None,
+            permission_mode: self.skill.front.permission_mode.clone(),
+            report: None,
+        };
         let (ok, summary) = run_to_end(&self.runner, inv, AGENT_TIMEOUT).await?;
         if !ok {
             bail!("agent check failed: {}", tail(&summary, 300));
@@ -209,7 +223,11 @@ async fn run_to_end(runner: &str, inv: Invocation, timeout: Duration) -> Result<
 fn tail(s: &str, n: usize) -> String {
     let s = s.trim();
     let count = s.chars().count();
-    if count <= n { s.to_string() } else { format!("…{}", s.chars().skip(count - n).collect::<String>()) }
+    if count <= n {
+        s.to_string()
+    } else {
+        format!("…{}", s.chars().skip(count - n).collect::<String>())
+    }
 }
 
 #[cfg(test)]

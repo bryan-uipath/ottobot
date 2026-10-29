@@ -60,8 +60,13 @@ pub struct Status {
 pub enum Request {
     Snapshot,
     /// Events of one run starting at index `from` (the count the client already has).
-    Events { run: String, from: usize },
-    RunNow { skill: String },
+    Events {
+        run: String,
+        from: usize,
+    },
+    RunNow {
+        skill: String,
+    },
     Reload,
     Status,
 }
@@ -119,7 +124,11 @@ impl AppState {
             pid: std::process::id(),
             running: self.runs.iter().filter(|r| r.meta.status == RunStatus::Running).count(),
             skills: self.skills.len(),
-            last_failure: self.runs.iter().find(|r| matches!(r.meta.status, RunStatus::Failed(_))).map(|r| (r.meta.skill.clone(), r.meta.id.clone())),
+            last_failure: self
+                .runs
+                .iter()
+                .find(|r| matches!(r.meta.status, RunStatus::Failed(_)))
+                .map(|r| (r.meta.skill.clone(), r.meta.id.clone())),
             next_fire: self.skills.iter().filter_map(|v| v.next_fire).min(),
             runner_usage: self.runner_usage.clone(),
         }
@@ -156,6 +165,9 @@ mod tests {
         assert!(matches!(r, Request::Events { ref run, from: 3 } if run == "x"));
         assert!(matches!(serde_json::from_str::<Request>(r#"{"type":"Status"}"#).unwrap(), Request::Status));
         assert_eq!(serde_json::to_string(&Response::Ok).unwrap(), r#"{"type":"Ok"}"#);
-        assert_eq!(serde_json::to_string(&Response::Events(vec![RunEvent::Text("hi".into())])).unwrap(), r#"{"type":"Events","data":[{"Text":"hi"}]}"#);
+        assert_eq!(
+            serde_json::to_string(&Response::Events(vec![RunEvent::Text("hi".into())])).unwrap(),
+            r#"{"type":"Events","data":[{"Text":"hi"}]}"#
+        );
     }
 }
