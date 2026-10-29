@@ -213,7 +213,9 @@ fn draw_strip(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
         (None, Some(_), Some(_)) => ("✗ daemon disconnected · retrying".to_string(), Style::default().fg(ORANGE)),
         (None, Some(e), None) => (format!("✗ {e}"), Style::default().fg(ORANGE)),
         (None, None, pid) => {
-            let who = pid.map(|p| format!("daemon {p}")).unwrap_or_else(|| "in-process".into());
+            let who = pid
+                .map(|p| format!("daemon {p} ({})", if st.commit.is_empty() { "?" } else { &st.commit }))
+                .unwrap_or_else(|| "in-process".into());
             let awake = if st.caffeinated { "caffeinated" } else { "not caffeinated" };
             // On battery the Mac sleeps on lid close regardless of caffeinate: warn.
             match &st.power {
