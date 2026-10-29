@@ -233,6 +233,7 @@ otto --run <skill>          one headless run, events to stdout (bypasses dedupe)
 otto --show <run-id>        dump a stored run's metadata and events
 otto --check <skill>        evaluate an event trigger once (compiles the checker if needed)
 otto --usage                each runner's version and quota (claude 5h/7d, codex 7d)
+otto --version              version and build commit, e.g. otto 0.2.0 (bf35001-dirty)
 otto --tick 30s --runner claude
 ```
 
@@ -247,7 +248,7 @@ session (on a NEXT skill: its history) · `esc` clear filter · `r` run now ·
 serves `~/.ottobot/otto.sock` (mode 0600). One daemon per machine, one skills
 root. On start it removes a stale socket, refuses (exit 1) if another daemon
 answers, and writes `~/.ottobot/daemon.json` (`pid`, `root`, `socket`,
-`started_at`); SIGINT/SIGTERM remove both.
+`started_at`, `commit`); SIGINT/SIGTERM remove both.
 
 `--install` writes `~/Library/LaunchAgents/com.ottobot.daemon.plist`
 (`otto daemon <root>`, RunAtLoad, KeepAlive, your current `PATH` so
@@ -265,7 +266,8 @@ always in-process. Locks are `flock`s the kernel drops on exit:
 `--tick`/`--runner`.
 
 The protocol is unversioned: after upgrading the binary, restart the daemon
-(a client that can't parse its answers exits with that hint).
+(a client that can't parse its answers exits with that hint). `Status`/`Snapshot`
+carry the daemon's build `commit`; `otto status` and the TUI strip show it.
 
 Wire: newline-delimited JSON, one request → one response, connection reusable.
 
@@ -276,7 +278,7 @@ Wire: newline-delimited JSON, one request → one response, connection reusable.
 {"type":"Reload"}                           → {"type":"Ok"}
 {"type":"Dismiss","skill":"<name>","key":"<incident_key>"} → {"type":"Ok"} | {"type":"Error","data":"no alert …"}
 {"type":"Notified","skill":"<name>","key":"<incident_key>"} → {"type":"Ok"} | {"type":"Error","data":"no pending notification …"}
-{"type":"Status"}                           → {"type":"Status","data":{root, pid, running, skills, last_failure, next_fire, runner_usage}}
+{"type":"Status"}                           → {"type":"Status","data":{root, pid, running, skills, last_failure, next_fire, runner_usage, power, commit}}
 ```
 
 ## Tray
@@ -285,7 +287,8 @@ Wire: newline-delimited JSON, one request → one response, connection reusable.
 counts, a popover with ALERTS (when any) above the same NOW / ATTENTION / QUOTA /
 NEXT board, and Run now / Reload from its menu. The icon gets a red dot for an
 immediate alert, yellow for critical, else the battery badge. It is a socket client only, so it needs the
-daemon. Build: `cd tray/src-tauri && cargo tauri build`. See `tray/README.md`.
+daemon. The popover header and tooltip show `tray <sha> · daemon <sha>`, with ⚠ when
+they differ (restart the stale one). Build: `cd tray/src-tauri && cargo tauri build`. See `tray/README.md`.
 
 ## Runners and usage
 

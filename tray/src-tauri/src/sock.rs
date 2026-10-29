@@ -115,6 +115,9 @@ pub struct Snapshot {
     /// Active (undismissed) critical/immediate alerts.
     #[serde(default)]
     pub alerts: Vec<Alert>,
+    /// Daemon's build SHA; empty from a daemon that predates it.
+    #[serde(default)]
+    pub commit: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +146,7 @@ pub enum Request {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
+#[allow(clippy::large_enum_variant)] // one short-lived value per request; boxing buys nothing
 pub enum Response {
     Snapshot(Snapshot),
     Ok,
@@ -189,7 +193,11 @@ mod tests {
         let s = r#"{"type":"Snapshot","data":{"root":"/x","store_dir":"/s","skills":[],"skill_errors":[],"runs":[],"log":[],"daemon_pid":1,
             "runner_health":[["claude",{"Ok":"2.1"}]],
             "runner_usage":[["claude",{"Ok":[{"label":"5h","used_percent":37.0,"resets_at":null}]}],["codex",{"Err":"no sessions"}]]}}"#;
-        assert!(matches!(serde_json::from_str(s).unwrap(), Response::Snapshot(Snapshot { daemon_pid: Some(1), .. })));
+        assert!(
+            matches!(serde_json::from_str(s).unwrap(), Response::Snapshot(Snapshot { daemon_pid: Some(1), ref commit, .. }) if commit.is_empty())
+        );
+        let s = s.replace(r#""daemon_pid":1"#, r#""daemon_pid":1,"commit":"abc1234""#);
+        assert!(matches!(serde_json::from_str(&s).unwrap(), Response::Snapshot(Snapshot { ref commit, .. }) if commit == "abc1234"));
         let d = Request::Dismiss { skill: "s".into(), key: "k".into() };
         assert_eq!(serde_json::to_string(&d).unwrap(), r#"{"type":"Dismiss","skill":"s","key":"k"}"#);
     }

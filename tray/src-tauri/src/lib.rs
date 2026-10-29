@@ -15,6 +15,8 @@ use tauri_plugin_notification::NotificationExt;
 const TRAY: &str = "main";
 const POPOVER: &str = "popover";
 const POLL_EVERY: Duration = Duration::from_secs(15);
+/// Short SHA this tray was built from; see build.rs.
+const COMMIT: &str = env!("OTTO_COMMIT");
 
 /// Skill names + latest report per skill: what the tray menu is built from.
 type MenuKey = (Vec<String>, Vec<(String, PathBuf)>);
@@ -81,7 +83,10 @@ fn apply_snapshot(app: &AppHandle, st: &Snapshot) {
     let warn = batt.map(|p| format!(" · ⚠ {}", p.summary())).unwrap_or_default();
     let n = st.alerts.len();
     let alerts = if n == 0 { String::new() } else { format!("{n} alert{} · ", if n == 1 { "" } else { "s" }) };
-    tooltip(app, &format!("{alerts}ottobot · {running} running · {failed} failed{warn}"));
+    // Protocol is unversioned: flag a tray/daemon build mismatch.
+    let (differ, daemon) = (st.commit != COMMIT, if st.commit.is_empty() { "?" } else { &st.commit });
+    let ver = format!("{}tray {COMMIT} · daemon {daemon}", if differ { "⚠ " } else { "" });
+    tooltip(app, &format!("{alerts}ottobot · {running} running · {failed} failed{warn}\n{ver}"));
     set_icon(
         app,
         match st.alerts.iter().map(|a| a.level).max() {
@@ -147,7 +152,7 @@ async fn refresh(app: &AppHandle) -> Result<Snapshot> {
             // No daemon → no power or alert data; don't leave a stale badge up.
             set_icon(app, Icon::Plain);
             let old = format!("{e:#}").contains(sock::OLD_PROTOCOL);
-            tooltip(app, &format!("ottobot · {}", if old { sock::OLD_PROTOCOL } else { "daemon not running" }));
+            tooltip(app, &format!("ottobot · {}\ntray {COMMIT}", if old { sock::OLD_PROTOCOL } else { "daemon not running" }));
         }
     }
     res
@@ -281,6 +286,11 @@ fn open_report(path: std::path::PathBuf) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn commit() -> &'static str {
+    COMMIT
+}
+
+#[tauri::command]
 fn quit(app: AppHandle) {
     app.exit(0);
 }
@@ -323,7 +333,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .manage(Tray::default())
-        .invoke_handler(tauri::generate_handler![snapshot, run_now, dismiss, open_skills, open_report, quit])
+        .invoke_handler(tauri::generate_handler![snapshot, run_now, dismiss, open_skills, open_report, commit, quit])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);

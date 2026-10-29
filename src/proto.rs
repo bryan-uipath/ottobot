@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
+/// Short SHA this binary was built from (`-dirty` if uncommitted changes); see build.rs.
+pub const COMMIT: &str = env!("OTTO_COMMIT");
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Snapshot {
     pub root: PathBuf,
@@ -30,6 +33,9 @@ pub struct Snapshot {
     /// Undismissed critical/immediate alerts; age = now - `first_seen`.
     #[serde(default)] // a pre-alerts daemon omits it
     pub alerts: Vec<Alert>,
+    /// Server's `COMMIT`; empty from a daemon that predates it.
+    #[serde(default)]
+    pub commit: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +64,8 @@ pub struct Status {
     pub next_fire: Option<DateTime<Local>>,
     pub runner_usage: crate::runner::RunnerUsage,
     pub power: Option<crate::power::Power>,
+    #[serde(default)]
+    pub commit: String,
 }
 
 /// e.g. `{"type":"Events","run":"20260101-120000-x","from":0}`, `{"type":"Status"}`.
@@ -130,6 +138,7 @@ impl AppState {
             power: self.power.clone(),
             // `normal` is never stored, so undismissed = active.
             alerts: self.alerts.iter().filter(|a| a.dismissed_level.is_none()).cloned().collect(),
+            commit: COMMIT.into(),
         }
     }
 
@@ -151,6 +160,7 @@ impl AppState {
             next_fire: self.skills.iter().filter_map(|v| v.next_fire).min(),
             runner_usage: self.runner_usage.clone(),
             power: self.power.clone(),
+            commit: COMMIT.into(),
         }
     }
 }
@@ -207,5 +217,18 @@ mod tests {
             serde_json::to_string(&Response::Events(vec![RunEvent::Text("hi".into())])).unwrap(),
             r#"{"type":"Events","data":[{"Text":"hi"}]}"#
         );
+    }
+
+    #[test]
+    fn commit_optional() {
+        let st = r#"{"root":"/x","pid":1,"running":0,"skills":0,"last_failure":null,"next_fire":null,"runner_usage":[],"power":null}"#;
+        assert_eq!(serde_json::from_str::<Status>(st).unwrap().commit, "");
+        let st = st.replace(r#""power":null"#, r#""power":null,"commit":"abc1234""#);
+        assert_eq!(serde_json::from_str::<Status>(&st).unwrap().commit, "abc1234");
+        let snap = serde_json::to_value(Snapshot { commit: "abc1234".into(), ..Default::default() }).unwrap();
+        assert_eq!(serde_json::from_value::<Snapshot>(snap.clone()).unwrap().commit, "abc1234");
+        let mut old = snap;
+        old.as_object_mut().unwrap().remove("commit");
+        assert_eq!(serde_json::from_value::<Snapshot>(old).unwrap().commit, "");
     }
 }

@@ -3,6 +3,7 @@ const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 const $ = (id) => document.getElementById(id);
 let visible = false;
+const trayCommit = invoke('commit').catch(() => '?');
 
 // Theme follows the OS.
 const dark = matchMedia('(prefers-color-scheme: dark)');
@@ -58,12 +59,17 @@ const clickable = (node, report) => {
   node.onkeydown = (e) => { if (e.key === 'Enter') go(); };
 };
 
-function render(st) {
+function render(st, tray) {
   const now = Date.now();
   const pct = st.power?.percent != null ? ` ${st.power.percent}%` : '';
   const pw = st.power ? (st.power.on_ac ? ` · AC${pct}` : ` · ⚠ battery${pct}`) : '';
   $('who').textContent = `pid ${st.daemon_pid ?? '?'} · ${basename(st.root)}${pw}`;
   $('who').classList.toggle('warn', !!st.power && !st.power.on_ac);
+  // Protocol is unversioned: a tray/daemon build mismatch may misparse.
+  const differ = st.commit !== tray;
+  const d = st.commit || '?';
+  $('ver').textContent = differ ? `⚠ tray ${tray} ≠ daemon ${d} — restart daemon/tray` : `tray ${tray} · daemon ${d}`;
+  $('ver').classList.toggle('warn', differ);
   const out = [];
 
   // Worst first, then newest. Verdict text is LLM-written from untrusted telemetry: textContent only (el).
@@ -165,9 +171,11 @@ function render(st) {
 }
 
 // Connected-but-unparseable (old daemon) vs. no daemon at all.
-function renderDown(err) {
+function renderDown(err, tray) {
   const old = String(err).includes('older protocol');
   $('who').textContent = '';
+  $('ver').textContent = `tray ${tray}`;
+  $('ver').classList.remove('warn');
   $('body').replaceChildren(el('div', 'down', null,
     el('div', 'big', old ? 'daemon speaks an older protocol — restart it' : 'daemon not running'),
     old ? '' : el('div', 'de', null, 'start it with ', el('code', null, 'otto daemon --install')),
@@ -175,7 +183,8 @@ function renderDown(err) {
 }
 
 async function refresh() {
-  try { render(await invoke('snapshot')); } catch (e) { renderDown(e); }
+  const tray = await trayCommit;
+  try { render(await invoke('snapshot'), tray); } catch (e) { renderDown(e, tray); }
 }
 
 $('skills').onclick = () => invoke('open_skills');

@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[derive(Parser, Debug)]
-#[command(name = "otto", about = "Higher-order coding agent: triggers → agent runs")]
+#[command(name = "otto", version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("OTTO_COMMIT"), ")"), about = "Higher-order coding agent: triggers → agent runs")]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -254,7 +254,7 @@ async fn status(json: bool) -> Result<()> {
         return Ok(());
     }
     let mut parts = vec![
-        format!("daemon {}", s.pid),
+        format!("daemon {} ({})", s.pid, if s.commit.is_empty() { "?" } else { &s.commit }),
         s.root.display().to_string(),
         format!("running {}", s.running),
         format!("skills {}", s.skills),

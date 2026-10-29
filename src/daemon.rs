@@ -61,7 +61,7 @@ pub async fn serve(
         st.daemon_pid = Some(std::process::id());
         st.log(format!("daemon listening on {}", sock.display()));
     }
-    let info = serde_json::json!({ "pid": std::process::id(), "root": root, "socket": sock, "started_at": chrono::Local::now() });
+    let info = serde_json::json!({ "pid": std::process::id(), "root": root, "socket": sock, "started_at": chrono::Local::now(), "commit": proto::COMMIT });
     std::fs::write(info_path()?, serde_json::to_string_pretty(&info)?)?;
     println!("otto daemon pid {} · {} · {}", std::process::id(), root.display(), sock.display());
 
