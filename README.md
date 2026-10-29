@@ -182,6 +182,15 @@ Failed and unassessed runs never touch alerts. Dismiss (tray, or `Dismiss` on
 the socket) hides it until a strictly higher level arrives; opening the report
 doesn't dismiss.
 
+Notifications: an alert entering `immediate` (new, escalated, or re-opened)
+gets a macOS notification, at most one per skill per 6h (agents mint new keys
+for one problem); capped ones still show in the tray. The daemon decides and
+sets `notify` on the alert; the tray claims it with `Notified` and posts it
+(`otto · <skill> · <headline>`, first sentence of the summary; click opens the
+report). Decision, cap time, and claim live in `alerts.json`, so restarts don't
+re-notify. Needs the tray running as the installed `.app` (a dev binary posts
+as Terminal) and notification permission for it (macOS asks on the first one).
+
 ## Event triggers
 
 On first check, `checker_model` writes a script for the condition to
@@ -266,6 +275,7 @@ Wire: newline-delimited JSON, one request → one response, connection reusable.
 {"type":"RunNow","skill":"<name>"}          → {"type":"Ok"} | {"type":"Error","data":"no skill …"}
 {"type":"Reload"}                           → {"type":"Ok"}
 {"type":"Dismiss","skill":"<name>","key":"<incident_key>"} → {"type":"Ok"} | {"type":"Error","data":"no alert …"}
+{"type":"Notified","skill":"<name>","key":"<incident_key>"} → {"type":"Ok"} | {"type":"Error","data":"no pending notification …"}
 {"type":"Status"}                           → {"type":"Status","data":{root, pid, running, skills, last_failure, next_fire, runner_usage}}
 ```
 
@@ -302,7 +312,7 @@ same scheme as `~/.claude/projects`:
 
 ```
 state.json            per-skill: hashes, last fired key/time, last run id, last check
-alerts.json           open/dismissed alerts per (skill, incident key)
+alerts.json           open/dismissed alerts per (skill, incident key), last notification per skill
 checkers/<skill>-<h>  compiled event checker scripts
 runs/<id>.json        run metadata (status, cost, tokens, cwd)
 runs/<id>.jsonl       normalized event stream (text, tool calls, results, usage)

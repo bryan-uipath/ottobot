@@ -5,6 +5,7 @@ use crate::skill::Skill;
 use crate::trigger::Trigger;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 pub type Shared = Arc<Mutex<AppState>>;
@@ -34,7 +35,13 @@ pub struct Alert {
     pub last_seen: DateTime<Local>,
     /// Level the user dismissed at; a strictly higher verdict re-opens the alert.
     pub dismissed_level: Option<Level>,
+    /// Set on entering immediate (if the skill's cap allows); the tray claims it with `Notified` and posts a notification.
+    #[serde(default)]
+    pub notify: bool,
 }
+
+/// At most one notification per skill per window: agents can mint new incident keys for one problem.
+pub const NOTIFY_EVERY: chrono::Duration = chrono::Duration::hours(6);
 
 #[derive(Debug, Default)]
 pub struct AppState {
@@ -55,6 +62,8 @@ pub struct AppState {
     /// AC vs battery; None when unknown.
     pub power: Option<crate::power::Power>,
     pub alerts: Vec<Alert>,
+    /// Last notification per skill, for `NOTIFY_EVERY`; persisted with alerts, as alerts can be cleared.
+    pub notified: BTreeMap<String, DateTime<Local>>,
 }
 
 impl AppState {
@@ -94,6 +103,7 @@ impl AppState {
         let (RunStatus::Succeeded, Some(v)) = (&m.status, &m.verdict) else { return false };
         let i = self.alerts.iter().position(|a| a.skill == m.skill && a.key == v.incident_key);
         let now = m.finished_at.unwrap_or_else(Local::now);
+        let prev = i.map(|i| self.alerts[i].level);
         match (i, v.level) {
             (None, Level::Normal) => return false,
             (Some(i), Level::Normal) => drop(self.alerts.remove(i)),
@@ -104,6 +114,7 @@ impl AppState {
                 }
                 (a.level, a.headline, a.summary, a.report, a.run_id, a.last_seen) =
                     (level, v.headline.clone(), v.summary.clone(), m.report.clone(), m.id.clone(), now);
+                a.notify &= level == Level::Immediate; // lowered before the tray claimed it → don't post
             }
             (None, level) => self.alerts.push(Alert {
                 skill: m.skill.clone(),
@@ -116,8 +127,30 @@ impl AppState {
                 first_seen: now,
                 last_seen: now,
                 dismissed_level: None,
+                notify: false,
             }),
         }
+        // Into immediate (new, escalated, or re-opened from dismissed) → notify, capped per skill.
+        if v.level == Level::Immediate && prev.is_none_or(|p| p < Level::Immediate) {
+            let capped = self.notified.get(&m.skill).is_some_and(|t| now - *t < NOTIFY_EVERY);
+            if let Some(a) = self.alerts.iter_mut().find(|a| a.skill == m.skill && a.key == v.incident_key) {
+                if a.dismissed_level.is_none() && !capped {
+                    a.notify = true;
+                    self.notified.insert(m.skill.clone(), now);
+                }
+            }
+        }
+        true
+    }
+
+    /// Tray claims a pending notification before posting it, so it's posted once. False if none pending.
+    pub fn claim_notify(&mut self, skill: &str, key: &str) -> bool {
+        let pending = |a: &Alert| a.notify && a.level == Level::Immediate && a.dismissed_level.is_none();
+        if !self.alerts.iter().any(|a| a.skill == skill && a.key == key && pending(a)) {
+            return false;
+        }
+        // One post per skill even if several queued while the tray was down (cap is per skill).
+        self.alerts.iter_mut().filter(|a| a.skill == skill).for_each(|a| a.notify = false);
         true
     }
 
@@ -125,6 +158,7 @@ impl AppState {
     pub fn dismiss(&mut self, skill: &str, key: &str) -> bool {
         let Some(a) = self.alerts.iter_mut().find(|a| a.skill == skill && a.key == key) else { return false };
         a.dismissed_level = Some(a.level);
+        a.notify = false;
         true
     }
 }
@@ -133,6 +167,7 @@ impl AppState {
 mod tests {
     use super::*;
     use crate::run::Verdict;
+    use chrono::TimeZone;
 
     fn run(id: &str, status: RunStatus, verdict: Option<&str>) -> RunMeta {
         RunMeta {
@@ -201,5 +236,98 @@ mod tests {
         let failed = r#"{"level":"normal","incident_key":"a"}"#;
         assert!(!st.record_verdict(&run("r4", RunStatus::Failed("x".into()), Some(failed))));
         assert_eq!(st.alerts, before);
+    }
+
+    /// `ok` finishing `h` hours from a fixed start, for the notify cap.
+    fn at(h: i64, level: &str, key: &str) -> RunMeta {
+        let mut m = ok(&format!("r{h}{key}"), level, key);
+        m.finished_at = Some(Local.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap() + chrono::Duration::hours(h));
+        m
+    }
+
+    fn pending(st: &AppState) -> Vec<&str> {
+        st.alerts.iter().filter(|a| a.notify).map(|a| a.key.as_str()).collect()
+    }
+
+    #[test]
+    fn notify_on_entering_immediate_capped_per_skill() {
+        let mut st = AppState::default();
+        st.record_verdict(&at(0, "critical", "a"));
+        assert!(pending(&st).is_empty(), "critical never notifies");
+        st.record_verdict(&at(0, "immediate", "a"));
+        assert_eq!(pending(&st), vec!["a"], "escalation to immediate");
+        assert!(st.claim_notify("s", "a") && !st.claim_notify("s", "a"), "claimed once");
+        st.record_verdict(&at(1, "immediate", "a"));
+        assert!(pending(&st).is_empty(), "repeat at same level");
+        st.record_verdict(&at(2, "immediate", "b"));
+        assert!(pending(&st).is_empty(), "new key within 6h is capped");
+        assert_eq!(st.alerts.len(), 2, "capped alert still shows");
+        st.record_verdict(&at(6, "immediate", "c"));
+        assert_eq!(pending(&st), vec!["c"], "cap expires after 6h");
+    }
+
+    #[test]
+    fn notify_on_reopen_not_while_dismissed() {
+        let mut st = AppState::default();
+        st.record_verdict(&at(0, "critical", "a"));
+        st.dismiss("s", "a");
+        st.record_verdict(&at(0, "immediate", "a"));
+        assert_eq!(pending(&st), vec!["a"], "re-opened by immediate");
+        let mut st = AppState::default();
+        st.record_verdict(&at(0, "immediate", "a"));
+        st.claim_notify("s", "a");
+        st.dismiss("s", "a");
+        st.record_verdict(&at(7, "critical", "a"));
+        st.record_verdict(&at(8, "immediate", "a"));
+        assert!(pending(&st).is_empty(), "still dismissed at immediate");
+    }
+
+    #[test]
+    fn pending_notify_dropped_on_lower_dismiss_and_siblings() {
+        let mut st = AppState::default();
+        st.record_verdict(&at(0, "immediate", "a"));
+        st.record_verdict(&at(1, "critical", "a"));
+        assert!(pending(&st).is_empty() && !st.claim_notify("s", "a"), "lowered before claim");
+        let mut st = AppState::default();
+        st.record_verdict(&at(0, "immediate", "a"));
+        st.dismiss("s", "a");
+        assert!(!st.claim_notify("s", "a"), "dismissed before claim");
+        // Tray down for 7h: two keys queued past the cap → one post.
+        let mut st = AppState::default();
+        st.record_verdict(&at(0, "immediate", "a"));
+        st.record_verdict(&at(7, "immediate", "b"));
+        assert_eq!(pending(&st).len(), 2);
+        assert!(st.claim_notify("s", "b") && pending(&st).is_empty());
+    }
+
+    #[test]
+    fn legacy_alerts_array_loads() {
+        let dir = std::env::temp_dir().join(format!("otto-legacy-alerts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut st = AppState::default();
+        st.record_verdict(&at(0, "critical", "a"));
+        let mut v = serde_json::to_value(&st.alerts).unwrap();
+        v[0].as_object_mut().map(|o| o.remove("notify"));
+        std::fs::write(dir.join("alerts.json"), v.to_string()).unwrap();
+        let f = crate::store::Store { dir: dir.clone() }.load_alerts();
+        assert_eq!(f.alerts.len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn notify_state_survives_restart() {
+        let dir = std::env::temp_dir().join(format!("otto-notify-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::store::Store { dir: dir.clone() };
+        let mut st = AppState::default();
+        st.record_verdict(&at(0, "immediate", "a"));
+        st.record_verdict(&at(1, "normal", "a"));
+        store.save_alerts(&st).unwrap();
+        // Restart: alert cleared, but the skill's last notification still caps a new key.
+        let f = store.load_alerts();
+        let mut st = AppState { alerts: f.alerts, notified: f.notified, ..Default::default() };
+        st.record_verdict(&at(2, "immediate", "b"));
+        assert!(pending(&st).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

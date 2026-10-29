@@ -1,11 +1,11 @@
 //! Persistent state under ~/.ottobot/<hash-of-skills-root>/.
 
 use crate::run::{Level, Run, RunEvent, RunMeta, Verdict};
-use crate::state::Alert;
+use crate::state::{Alert, AppState};
 use anyhow::Result;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -27,6 +27,13 @@ pub struct SkillState {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct State {
     pub skills: HashMap<String, SkillState>,
+}
+
+/// `alerts.json`: alerts plus per-skill last notification (must survive an alert being cleared).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AlertsFile {
+    pub alerts: Vec<Alert>,
+    pub notified: BTreeMap<String, DateTime<Local>>,
 }
 
 #[derive(Debug, Clone)]
@@ -63,13 +70,17 @@ impl Store {
     }
 
     /// Separate from state.json: only written under the shared-state lock, so it never races the scheduler's state saves.
-    pub fn load_alerts(&self) -> Vec<Alert> {
-        fs::read_to_string(self.dir.join("alerts.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    pub fn load_alerts(&self) -> AlertsFile {
+        let Ok(s) = fs::read_to_string(self.dir.join("alerts.json")) else { return AlertsFile::default() };
+        // Pre-notification builds wrote a bare array.
+        serde_json::from_str(&s)
+            .or_else(|_| serde_json::from_str(&s).map(|alerts| AlertsFile { alerts, notified: Default::default() }))
+            .unwrap_or_default()
     }
 
-    pub fn save_alerts(&self, a: &[Alert]) -> Result<()> {
+    pub fn save_alerts(&self, st: &AppState) -> Result<()> {
         let tmp = self.dir.join("alerts.json.tmp");
-        fs::write(&tmp, serde_json::to_string_pretty(a)?)?;
+        fs::write(&tmp, serde_json::to_string_pretty(&AlertsFile { alerts: st.alerts.clone(), notified: st.notified.clone() })?)?;
         fs::rename(tmp, self.dir.join("alerts.json"))?;
         Ok(())
     }
