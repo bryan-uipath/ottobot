@@ -106,6 +106,11 @@ impl Store {
         d
     }
 
+    /// `$OTTO_LEDGER` for `skill`, without creating the memory dir.
+    pub fn ledger_path(&self, skill: &str) -> PathBuf {
+        crate::ledger::path(&self.dir.join("memory").join(skill))
+    }
+
     /// `<store>/reports/<id>.html`; the agent may write `.md` beside it instead.
     pub fn report_path(&self, id: &str) -> PathBuf {
         self.dir.join("reports").join(format!("{id}.html"))

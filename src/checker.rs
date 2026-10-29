@@ -19,6 +19,9 @@ pub const WATCH_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// Script failures before it is deleted and recompiled.
 pub const MAX_SCRIPT_FAILURES: u32 = 3;
 
+/// Bump when the compile prompt changes what scripts can rely on (v2: $OTTO_MEMORY/$OTTO_LEDGER), so old scripts recompile.
+const COMPILE_VERSION: u32 = 2;
+
 /// What a checker (script or agent) reports. `key` dedupes occurrences.
 #[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 pub struct CheckResult {
@@ -79,7 +82,7 @@ impl Checker {
     }
 
     pub fn script_path(&self) -> PathBuf {
-        self.dir.join(format!("{}-{}", self.skill.name, self.skill.trigger_hash))
+        self.dir.join(format!("{}-{}-v{COMPILE_VERSION}", self.skill.name, self.skill.trigger_hash))
     }
 
     /// Compile if needed, run the script, fall back to an agent on any error.
@@ -127,7 +130,11 @@ impl Checker {
              - summary: one human line, include URLs/ids the downstream agent needs\n\
              Exit non-zero only when the check itself cannot run (auth, network). \
              Use CLIs on this machine (gh, curl, jq, az...). Run it once to verify the output \
-             parses. Do not report anything except the file.\n\n\
+             parses. Do not report anything except the file.\n\
+             The script gets $OTTO_MEMORY (per-skill dir) and $OTTO_LEDGER, JSON \
+             {{\"items\": {{\"<id>\": {{\"at\": \"<RFC3339>\", ...}}}}}} of ids the skill body already handled \
+             (missing file = empty). If the condition is about items (PRs, comments, runs), skip ids already in \
+             $OTTO_LEDGER; never write it.\n\n\
              Skill body, for context on what the condition means:\n\n{body}",
             desc = self.description,
             path = path.display(),
@@ -160,11 +167,14 @@ impl Checker {
 
     async fn run_script(&self) -> Result<CheckResult> {
         let path = self.script_path();
+        std::fs::create_dir_all(&self.memory)?;
         let out = tokio::time::timeout(
             CHECK_TIMEOUT,
             tokio::process::Command::new(&path)
                 .current_dir(&self.cwd)
                 .env("OTTO_SKILL", &self.skill.name)
+                .env("OTTO_MEMORY", &self.memory)
+                .env("OTTO_LEDGER", crate::ledger::path(&self.memory))
                 .stdin(Stdio::null())
                 .kill_on_drop(true)
                 .output(),
@@ -195,7 +205,9 @@ impl Checker {
         };
         let prompt = format!(
             "{watch}Determine whether this condition holds right now:\n\n  {desc}\n\n\
-             Investigate with the tools available (gh, curl, jq, az...). Do not fix anything.\n\
+             Investigate with the tools available (gh, curl, jq, az...). Do not fix anything. \
+             $OTTO_LEDGER (JSON {{\"items\": {{\"<id>\": {{\"at\": ...}}}}}}, missing = empty) lists ids the skill body \
+             already handled: skip them, and never write it.\n\
              Your final message must be exactly one JSON line, nothing else:\n\
              {{\"fired\": bool, \"key\": string, \"summary\": string}}\n\
              key = stable id of this occurrence (\"\" when not fired); summary = one human line \

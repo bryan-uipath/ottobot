@@ -30,6 +30,36 @@ pub struct Frontmatter {
     pub trigger: TriggerSpec,
     #[serde(default, with = "humantime_serde")]
     pub timeout: Option<Duration>,
+    /// Age after which the daemon prunes `$OTTO_LEDGER` items; `0`/`off` = never. Read via `ledger_ttl()`.
+    #[serde(default, deserialize_with = "ttl")]
+    pub ledger_ttl: Option<Duration>,
+}
+
+impl Frontmatter {
+    /// 30d unless set; None when disabled.
+    pub fn ledger_ttl(&self) -> Option<Duration> {
+        match self.ledger_ttl {
+            Some(d) if d.is_zero() => None,
+            Some(d) => Some(d),
+            None => Some(Duration::from_secs(30 * 86400)),
+        }
+    }
+}
+
+/// humantime string, `off`, or a bare YAML `0`; the last two map to zero (disabled).
+fn ttl<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Num(u64),
+        Str(String),
+    }
+    match Raw::deserialize(d)? {
+        Raw::Num(0) => Ok(Some(Duration::ZERO)),
+        Raw::Str(s) if s == "off" => Ok(Some(Duration::ZERO)),
+        Raw::Str(s) => humantime::parse_duration(&s).map(Some).map_err(serde::de::Error::custom),
+        Raw::Num(n) => Err(serde::de::Error::custom(format!("ledger_ttl {n} needs a unit, e.g. 30d"))),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -118,4 +148,24 @@ fn split_frontmatter(text: &str) -> Option<(&str, &str)> {
     let front = &rest[..end];
     let body = rest[end + 4..].trim_start_matches(['-']).trim_start_matches(['\r', '\n']);
     Some((front, body))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ttl_of(yaml: &str) -> Result<Option<Duration>, serde_yaml::Error> {
+        serde_yaml::from_str::<Frontmatter>(&format!("trigger: {{cron: '* * * * *'}}\n{yaml}")).map(|f| f.ledger_ttl())
+    }
+
+    #[test]
+    fn ledger_ttl_default_units_and_off() {
+        assert_eq!(ttl_of("").unwrap(), Some(Duration::from_secs(30 * 86400)));
+        assert_eq!(ttl_of("ledger_ttl: 7d").unwrap(), Some(Duration::from_secs(7 * 86400)));
+        assert_eq!(ttl_of("ledger_ttl: 0").unwrap(), None);
+        assert_eq!(ttl_of("ledger_ttl: off").unwrap(), None);
+        assert_eq!(ttl_of("ledger_ttl: '0'").unwrap(), None);
+        assert!(ttl_of("ledger_ttl: 30").is_err());
+        assert!(ttl_of("ledger_ttl: soon").is_err());
+    }
 }
