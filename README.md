@@ -96,7 +96,9 @@ different incident must not wait) but stay rate-bounded: at most one run per
 run is active. `$OTTO_LAST_FIRED_KEY` tells the watcher which incident ottobot
 actually ran, so a deferred one fires again. The watcher runs on the skill's
 `runner` with `checker_model` (sonnet on claude) and gets 30m per check.
-`otto --check <skill>` works on a throwaway copy of the notes. Programmatic
+`otto --check <skill>` works on a throwaway copy of the notes. The body
+declares severity in `$OTTO_VERDICT` (see Reports); give each skill its own
+"normal" counterexamples so routine noise stays `normal`. Programmatic
 kick: `otto --run <skill>` or `{"type":"RunNow","skill":"…"}` on the socket.
 
 Trust: a watcher reads logs, Slack and telemetry, any of which can carry
@@ -153,6 +155,25 @@ otto reports              latest report per skill
 otto reports --all        every report
 otto reports <skill> --open
 ```
+
+Every run also gets `$OTTO_VERDICT` = `<store>/reports/<run-id>.verdict.json`,
+a severity call read once when the run finishes:
+
+```json
+{"level": "critical", "incident_key": "flow-5xx-eu", "headline": "≤80 chars",
+ "summary": "1–4 sentences", "evidence": ["5xx 2.1% vs 0.1% baseline"], "action": "next step"}
+```
+
+| level | meaning |
+|---|---|
+| `normal` | nothing needs a human soon |
+| `critical` | a human should act soon |
+| `immediate` | harm is ongoing and waiting materially worsens it: concrete impact, fresh numbers vs baseline, why it can't wait. Novelty, staging-only, or one region alone is not immediate |
+
+Missing or invalid file (unknown level, bad JSON) = unassessed, never treated
+as normal. The headline is cut to 80 chars; `immediate` with no `evidence`
+becomes `critical`. The report gets a TL;DR box at the top (yellow critical,
+red immediate; normal is one dim line); all verdict text is HTML-escaped.
 
 ## Event triggers
 
