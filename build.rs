@@ -8,18 +8,17 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 pub fn main() {
-    let commit = match git(&["rev-parse", "--short", "HEAD"]) {
+    let commit = match git(&["rev-parse", "--short=10", "HEAD"]) {
         Some(sha) => {
-            // Rerun on new commits (HEAD, its ref) and source edits (dirty); --git-path resolves worktrees.
+            // Rerun on new commits and source edits (dirty); --git-path resolves worktrees. The reflog
+            // (logs/HEAD) moves on every commit/checkout even when the branch ref is packed.
             let head_ref = git(&["symbolic-ref", "-q", "HEAD"]);
-            let watch = ["HEAD", head_ref.as_deref().unwrap_or("HEAD"), "packed-refs"];
-            for p in watch.iter().filter_map(|p| git(&["rev-parse", "--git-path", p])) {
-                // A missing path would rerun every build.
-                if std::path::Path::new(&p).exists() {
-                    println!("cargo:rerun-if-changed={p}");
-                }
+            let watch = ["HEAD", head_ref.as_deref().unwrap_or("HEAD"), "packed-refs", "logs/HEAD", "index"];
+            let git_paths = watch.iter().filter_map(|p| git(&["rev-parse", "--git-path", p]));
+            // A missing path would rerun every build.
+            for p in git_paths.chain(["src", "assets"].map(String::from)).filter(|p| std::path::Path::new(p).exists()) {
+                println!("cargo:rerun-if-changed={p}");
             }
-            println!("cargo:rerun-if-changed=src");
             // Tracked files only: untracked scratch (e.g. .claude/worktrees) isn't a code change.
             let dirty = git(&["status", "--porcelain", "--untracked-files=no"]).is_some_and(|s| !s.is_empty());
             format!("{sha}{}", if dirty { "-dirty" } else { "" })

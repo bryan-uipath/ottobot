@@ -152,7 +152,7 @@ async fn refresh(app: &AppHandle) -> Result<Snapshot> {
             // No daemon → no power or alert data; don't leave a stale badge up.
             set_icon(app, Icon::Plain);
             let old = format!("{e:#}").contains(sock::OLD_PROTOCOL);
-            tooltip(app, &format!("ottobot · {}", if old { sock::OLD_PROTOCOL } else { "daemon not running" }));
+            tooltip(app, &format!("ottobot · {}\ntray {COMMIT}", if old { sock::OLD_PROTOCOL } else { "daemon not running" }));
         }
     }
     res
