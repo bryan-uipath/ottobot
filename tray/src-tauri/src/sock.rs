@@ -118,6 +118,9 @@ pub struct Snapshot {
     /// Daemon's build SHA; empty from a daemon that predates it.
     #[serde(default)]
     pub commit: String,
+    /// Skill → dismissed failed run id; ATTENTION hides that run.
+    #[serde(default)]
+    pub dismissed_failures: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +145,7 @@ pub enum Request {
     Reload,
     Dismiss { skill: String, key: String },
     Notified { skill: String, key: String },
+    DismissFailure { run: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +204,8 @@ mod tests {
         assert!(matches!(serde_json::from_str(&s).unwrap(), Response::Snapshot(Snapshot { ref commit, .. }) if commit == "abc1234"));
         let d = Request::Dismiss { skill: "s".into(), key: "k".into() };
         assert_eq!(serde_json::to_string(&d).unwrap(), r#"{"type":"Dismiss","skill":"s","key":"k"}"#);
+        let f = Request::DismissFailure { run: "r".into() };
+        assert_eq!(serde_json::to_string(&f).unwrap(), r#"{"type":"DismissFailure","run":"r"}"#);
     }
 
     #[test]

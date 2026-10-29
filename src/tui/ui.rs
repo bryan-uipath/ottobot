@@ -73,7 +73,7 @@ pub struct Board<'a> {
     pub attn: Vec<Attn<'a>>,
     pub attn_more: usize,
     pub next: Vec<&'a SkillSnap>,
-    /// Failed runs in the last 24h, uncapped.
+    /// Current failures (`Snapshot::failures`), uncapped.
     pub failed: usize,
 }
 
@@ -90,8 +90,7 @@ pub fn board(st: &Snapshot) -> Board<'_> {
         })
         .collect();
     attn.extend(st.skill_errors.iter().map(|(p, e)| Attn::Invalid { label: file_name(p), err: e.clone(), skill: None }));
-    let since = Local::now() - chrono::Duration::hours(24);
-    let failed: Vec<&RunMeta> = st.runs.iter().filter(|r| matches!(r.status, RunStatus::Failed(_)) && r.started_at >= since).collect();
+    let failed = st.failures();
     let n_failed = failed.len();
     attn.extend(failed.into_iter().map(Attn::Run));
     let attn_more = attn.len().saturating_sub(ATTN_CAP);
@@ -383,7 +382,7 @@ fn draw_board(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
                 }
             }
             (None, Some(r)) => {
-                if let Some(s) = r.summary.as_deref() {
+                if let Some(s) = r.line() {
                     lines.push(dim_line(format!("  ↳ {}", fit(s, w.saturating_sub(4)))));
                 }
             }

@@ -102,18 +102,28 @@ function render(st, tray) {
   const attn = [];
   for (const v of st.skills) if (v.trigger.Err) attn.push([v.name, firstLine(v.trigger.Err), null]);
   for (const [p, e] of st.skill_errors) attn.push([basename(p), firstLine(e), null]);
-  const since = now - 24 * 3600e3;
+  // Per skill, only a latest finished run that failed in the last 24h and wasn't dismissed (`Snapshot::failures`).
+  const since = now - 24 * 3600e3, seen = new Set();
   for (const r of st.runs) {
-    if (!r.status.Failed || Date.parse(r.started_at) < since) continue;
+    if (r.status === 'Running' || seen.has(r.skill)) continue;
+    seen.add(r.skill);
+    if (!r.status.Failed || Date.parse(r.started_at) < since || st.dismissed_failures?.[r.skill] === r.id) continue;
     const end = r.finished_at ? Date.parse(r.finished_at) : now;
-    attn.push([r.skill, firstLine(r.status.Failed), `\u00a0· ${dur(end - Date.parse(r.started_at))}`, r.report]);
+    attn.push([r.skill, firstLine(r.status.Failed), `\u00a0· ${dur(end - Date.parse(r.started_at))}`, r.report, r.id]);
   }
   if (!attn.length) out.push(none());
   // `<reason> · <duration>`: the reason truncates, the duration never does. Rows with a report open it on click.
-  for (const [name, why, tail, report] of attn) {
+  for (const [name, why, tail, report, run] of attn) {
     const r = el('div', 'row', null, el('span', 'x', '✗'), el('span', 'name', name),
       el('span', 'rest split', null, el('span', 'why', why), tail ? el('span', null, tail) : ''));
     if (report) clickable(r, report);
+    if (run) {
+      const btn = el('button', null, 'dismiss');
+      // Row opens the report; the button must not.
+      btn.onclick = (e) => { e.stopPropagation(); invoke('dismiss_failure', { run }).then(refresh, refresh); };
+      btn.onkeydown = (e) => e.stopPropagation();
+      r.append(btn);
+    }
     out.push(r);
   }
 
@@ -157,8 +167,9 @@ function render(st, tray) {
     out.push(row(glyph, v.name, `${when} · ${last}`, btn));
     // Running: no stale summary line (NOW shows the live run). Else: latest finished run's summary.
     const latest = v.active_run ? null : st.runs.find(r => r.skill === v.name && r.status !== 'Running');
-    if (latest?.summary || latest?.report) {
-      const sub = el('div', 'sub', latest.summary ? `↳ ${latest.summary}` : '↳ ');
+    const line = latest?.verdict?.headline || latest?.summary;
+    if (line || latest?.report) {
+      const sub = el('div', 'sub', line ? `↳ ${line}` : '↳ ');
       if (latest.report) {
         sub.append(' · ', el('span', 'report', 'report ↗'));
         clickable(sub, latest.report);

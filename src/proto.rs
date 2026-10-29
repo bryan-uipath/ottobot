@@ -7,6 +7,7 @@ use crate::state::{Alert, AppState, Shared};
 use crate::store::Store;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
@@ -36,6 +37,23 @@ pub struct Snapshot {
     /// Server's `COMMIT`; empty from a daemon that predates it.
     #[serde(default)]
     pub commit: String,
+    /// Skill → dismissed failed run id; see `failures`.
+    #[serde(default)]
+    pub dismissed_failures: BTreeMap<String, String>,
+}
+
+impl Snapshot {
+    /// ATTENTION runs: per skill, the latest finished run if it failed in the last 24h and wasn't dismissed.
+    pub fn failures(&self) -> Vec<&RunMeta> {
+        let since = Local::now() - chrono::Duration::hours(24);
+        let mut seen = std::collections::HashSet::new();
+        self.runs
+            .iter()
+            .filter(|r| r.status != RunStatus::Running && seen.insert(&r.skill))
+            .filter(|r| matches!(r.status, RunStatus::Failed(_)) && r.started_at >= since)
+            .filter(|r| self.dismissed_failures.get(&r.skill) != Some(&r.id))
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +111,10 @@ pub enum Request {
         skill: String,
         key: String,
     },
+    /// Hide a failed run from ATTENTION; the skill's next failure shows again.
+    DismissFailure {
+        run: String,
+    },
 }
 
 /// e.g. `{"type":"Ok"}`, `{"type":"Status","data":{...}}`.
@@ -139,6 +161,7 @@ impl AppState {
             // `normal` is never stored, so undismissed = active.
             alerts: self.alerts.iter().filter(|a| a.dismissed_level.is_none()).cloned().collect(),
             commit: COMMIT.into(),
+            dismissed_failures: self.dismissed_failures.clone(),
         }
     }
 
@@ -178,6 +201,13 @@ pub async fn handle(shared: &Shared, cmds: &mpsc::Sender<Command>, req: Request)
             Command::RunNow(skill)
         }
         Request::Reload => Command::Reload,
+        Request::DismissFailure { run } => {
+            let mut st = shared.lock().unwrap();
+            if !st.dismiss_failure(&run) {
+                return Response::Error(format!("no failed run {run}"));
+            }
+            return save_alerts(&st);
+        }
         Request::Dismiss { ref skill, ref key } | Request::Notified { ref skill, ref key } => {
             let mut st = shared.lock().unwrap();
             let (done, what) = match req {
@@ -187,15 +217,19 @@ pub async fn handle(shared: &Shared, cmds: &mpsc::Sender<Command>, req: Request)
             if !done {
                 return Response::Error(format!("no {what} {skill}/{key}"));
             }
-            return match (Store { dir: st.store_dir.clone() }).save_alerts(&st) {
-                Ok(()) => Response::Ok,
-                Err(e) => Response::Error(format!("save alerts: {e:#}")),
-            };
+            return save_alerts(&st);
         }
     };
     match cmds.send(cmd).await {
         Ok(()) => Response::Ok,
         Err(_) => Response::Error("scheduler stopped".into()),
+    }
+}
+
+fn save_alerts(st: &AppState) -> Response {
+    match (Store { dir: st.store_dir.clone() }).save_alerts(st) {
+        Ok(()) => Response::Ok,
+        Err(e) => Response::Error(format!("save alerts: {e:#}")),
     }
 }
 
@@ -212,11 +246,70 @@ mod tests {
         assert!(matches!(d, Request::Dismiss { ref skill, ref key } if skill == "s" && key == "k"));
         let n: Request = serde_json::from_str(r#"{"type":"Notified","skill":"s","key":"k"}"#).unwrap();
         assert!(matches!(n, Request::Notified { ref skill, ref key } if skill == "s" && key == "k"));
+        let f: Request = serde_json::from_str(r#"{"type":"DismissFailure","run":"r"}"#).unwrap();
+        assert!(matches!(f, Request::DismissFailure { ref run } if run == "r"));
         assert_eq!(serde_json::to_string(&Response::Ok).unwrap(), r#"{"type":"Ok"}"#);
         assert_eq!(
             serde_json::to_string(&Response::Events(vec![RunEvent::Text("hi".into())])).unwrap(),
             r#"{"type":"Events","data":[{"Text":"hi"}]}"#
         );
+    }
+
+    #[test]
+    fn failures_are_current_and_undismissed() {
+        let run = |id: &str, skill: &str, ok: bool, h: i64| RunMeta {
+            id: id.into(),
+            skill: skill.into(),
+            runner: "claude".into(),
+            model: None,
+            effort: None,
+            trigger_key: "k".into(),
+            cwd: Default::default(),
+            started_at: Local::now() - chrono::Duration::hours(h),
+            finished_at: None,
+            status: if ok { RunStatus::Succeeded } else { RunStatus::Failed("x".into()) },
+            summary: None,
+            report: None,
+            verdict: None,
+            cost_usd: None,
+            input_tokens: 0,
+            output_tokens: 0,
+        };
+        let ids = |s: &Snapshot| s.failures().iter().map(|r| r.id.clone()).collect::<Vec<_>>();
+        // Newest first: a fixed after a failure; b failed twice; c failed 2 days ago.
+        let mut st = Snapshot {
+            runs: vec![
+                run("a2", "a", true, 1),
+                run("b2", "b", false, 2),
+                run("a1", "a", false, 3),
+                run("b1", "b", false, 4),
+                run("c1", "c", false, 48),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(ids(&st), vec!["b2"]);
+        st.runs.insert(0, run("b3", "b", true, 0));
+        st.runs[0].status = RunStatus::Running;
+        assert_eq!(ids(&st), vec!["b2"], "a running run doesn't hide the last failure");
+        st.dismissed_failures.insert("b".into(), "b2".into());
+        assert!(ids(&st).is_empty(), "dismissed");
+        st.runs[0].status = RunStatus::Failed("y".into());
+        assert_eq!(ids(&st), vec!["b3"], "newer failure shows again");
+    }
+
+    #[test]
+    fn dismiss_failure_only_failed_runs() {
+        let mut st = AppState::default();
+        assert!(!st.dismiss_failure("nope"));
+        let r: RunMeta = serde_json::from_str(
+            r#"{"id":"r","skill":"s","runner":"c","model":null,"trigger_key":"k","started_at":"2026-01-01T00:00:00Z",
+                "finished_at":null,"status":"Succeeded","cost_usd":null,"input_tokens":0,"output_tokens":0}"#,
+        )
+        .unwrap();
+        st.runs.push(crate::run::Run { meta: r, events: vec![] });
+        assert!(!st.dismiss_failure("r"), "succeeded run");
+        st.runs[0].meta.status = RunStatus::Failed("x".into());
+        assert!(st.dismiss_failure("r") && st.dismissed_failures.get("s").map(String::as_str) == Some("r"));
     }
 
     #[test]

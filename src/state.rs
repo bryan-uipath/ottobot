@@ -64,6 +64,8 @@ pub struct AppState {
     pub alerts: Vec<Alert>,
     /// Last notification per skill, for `NOTIFY_EVERY`; persisted with alerts, as alerts can be cleared.
     pub notified: BTreeMap<String, DateTime<Local>>,
+    /// Skill → failed run id hidden from ATTENTION; a newer failure has another id, so it shows again.
+    pub dismissed_failures: BTreeMap<String, String>,
 }
 
 impl AppState {
@@ -159,6 +161,13 @@ impl AppState {
         let Some(a) = self.alerts.iter_mut().find(|a| a.skill == skill && a.key == key) else { return false };
         a.dismissed_level = Some(a.level);
         a.notify = false;
+        true
+    }
+
+    /// Hide a failed run from ATTENTION. False if there is no such failed run.
+    pub fn dismiss_failure(&mut self, run: &str) -> bool {
+        let Some(r) = self.runs.iter().find(|r| r.meta.id == run && matches!(r.meta.status, RunStatus::Failed(_))) else { return false };
+        self.dismissed_failures.insert(r.meta.skill.clone(), run.to_string());
         true
     }
 }

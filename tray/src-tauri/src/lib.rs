@@ -77,7 +77,15 @@ impl Tray {
 fn apply_snapshot(app: &AppHandle, st: &Snapshot) {
     let t = app.state::<Tray>();
     let since = chrono::Local::now() - chrono::Duration::hours(24);
-    let failed = st.runs.iter().filter(|r| matches!(r.status, RunStatus::Failed(_)) && r.started_at >= since).count();
+    // Same rule as ATTENTION (`Snapshot::failures`): per skill, latest finished run failed and not dismissed.
+    let mut seen = std::collections::HashSet::new();
+    let failed = st
+        .runs
+        .iter()
+        .filter(|r| r.status != RunStatus::Running && seen.insert(&r.skill))
+        .filter(|r| matches!(r.status, RunStatus::Failed(_)) && r.started_at >= since)
+        .filter(|r| st.dismissed_failures.get(&r.skill) != Some(&r.id))
+        .count();
     let running = st.runs.iter().filter(|r| r.status == RunStatus::Running).count();
     let batt = st.power.as_ref().filter(|p| !p.on_ac);
     let warn = batt.map(|p| format!(" · ⚠ {}", p.summary())).unwrap_or_default();
@@ -190,6 +198,7 @@ fn build_menu(app: &AppHandle, skills: &[String], reports: &[(String, PathBuf)])
         .iter()
         .map(|(s, p)| MenuItem::with_id(app, format!("report:{}", p.display()), s, true, None::<&str>))
         .collect::<tauri::Result<Vec<_>>>()?;
+    reps.push(MenuItem::with_id(app, "reports_index", "All reports…", true, None::<&str>)?);
     reps.push(MenuItem::with_id(app, "reports_dir", "Open reports folder", true, None::<&str>)?);
     let rrefs: Vec<&dyn IsMenuItem<Wry>> = reps.iter().map(|m| m as &dyn IsMenuItem<Wry>).collect();
     Menu::with_items(
@@ -261,6 +270,11 @@ async fn dismiss(t: State<'_, Tray>, skill: String, key: String) -> Result<(), S
     t.request(Request::Dismiss { skill, key }).await.map(|_| ()).map_err(|e| format!("{e:#}"))
 }
 
+#[tauri::command]
+async fn dismiss_failure(t: State<'_, Tray>, run: String) -> Result<(), String> {
+    t.request(Request::DismissFailure { run }).await.map(|_| ()).map_err(|e| format!("{e:#}"))
+}
+
 /// Skills folder in Finder. Falls back to ~/.ottobot/skills when no daemon has been seen.
 #[tauri::command]
 fn open_skills(t: State<'_, Tray>) -> Result<(), String> {
@@ -316,6 +330,12 @@ async fn menu_action(app: AppHandle, id: String) {
             }
             return;
         }
+        "reports_index" => {
+            if let Some(d) = app.state::<Tray>().store_dir.lock().unwrap().clone() {
+                let _ = open_report(d.join("reports/index.html"));
+            }
+            return;
+        }
         id if id.starts_with("report:") => return drop(open_report(PathBuf::from(&id["report:".len()..]))),
         "reload" => Request::Reload,
         id => match id.strip_prefix("run:") {
@@ -333,7 +353,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .manage(Tray::default())
-        .invoke_handler(tauri::generate_handler![snapshot, run_now, dismiss, open_skills, open_report, commit, quit])
+        .invoke_handler(tauri::generate_handler![snapshot, run_now, dismiss, dismiss_failure, open_skills, open_report, commit, quit])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
