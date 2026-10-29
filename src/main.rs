@@ -300,12 +300,13 @@ fn reports(store: &store::Store, skill: Option<&str>, all: bool, open: bool) -> 
         .filter(|m| m.report.as_ref().is_some_and(|p| p.is_file()))
         .filter(|m| all || seen.insert(m.skill.clone()))
         .collect();
-    if runs.is_empty() {
-        anyhow::bail!("no reports{}", skill.map(|s| format!(" for {s}")).unwrap_or_default());
-    }
+    // The index exists (and is useful) even before the first report.
     if open && skill.is_none() {
         std::process::Command::new("open").arg(store.write_index()?).status()?;
         return Ok(());
+    }
+    if runs.is_empty() {
+        anyhow::bail!("no reports{}", skill.map(|s| format!(" for {s}")).unwrap_or_default());
     }
     if open {
         let Some(p) = runs[0].report.as_ref() else { return Ok(()) };

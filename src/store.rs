@@ -163,8 +163,13 @@ impl Store {
 
     /// `<store>/reports/index.html`, rebuilt from every run on disk.
     pub fn write_index(&self) -> Result<PathBuf> {
+        // Serialize read + publish: concurrent finishers could otherwise publish an older snapshot last.
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let path = self.dir.join("reports").join("index.html");
-        fs::write(&path, render_index(&self.read_metas(false)))?;
+        let tmp = path.with_extension(format!("html.tmp-{}", std::process::id()));
+        fs::write(&tmp, render_index(&self.read_metas(false)))?;
+        fs::rename(tmp, &path)?;
         Ok(path)
     }
 
@@ -285,7 +290,7 @@ fn index_row(m: &RunMeta) -> String {
     let dur = m.finished_at.map(|f| (f - m.started_at).num_seconds().max(0)).unwrap_or(0);
     let cost = m.cost_usd.map(|c| format!("${c:.2}")).unwrap_or_default();
     // Reports sit beside index.html.
-    let href = m.report.as_ref().and_then(|p| p.file_name()).map(|f| attr_escape(&f.to_string_lossy())).unwrap_or_default();
+    let href = m.report.as_ref().and_then(|p| p.file_name()).map(|f| attr_escape(&url_segment(&f.to_string_lossy()))).unwrap_or_default();
     format!(
         "<tr data-skill=\"{skill}\"><td>{started}</td><td>{skill}</td><td>{status}</td><td>{verdict}</td><td>{mm}m{ss:02}s</td><td>{cost}</td><td><a href=\"{href}\">report</a></td></tr>",
         skill = attr_escape(&m.skill),
@@ -417,6 +422,16 @@ const META_CSS: &str = ".otto-meta{font:12px/1.5 -apple-system,BlinkMacSystemFon
 // Translucent fills over whatever palette the page has: yellow for critical, red for immediate.
 const VERDICT_CSS: &str = ".otto-verdict{font:14px/1.5 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;border:1px solid;border-left-width:4px;border-radius:6px;padding:4px 14px;margin:12px 0 20px}.otto-verdict p{margin:8px 0}.otto-verdict ul{margin:4px 0;padding-left:1.4em}.otto-critical{border-color:#f5a623;background:rgba(245,166,35,.14)}.otto-immediate{border-color:#ff5c5c;background:rgba(255,92,92,.16)}.otto-normal{font:12px/1.5 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;opacity:.7;margin:4px 0 12px}";
 
+/// Percent-encode a filename for use as a relative href (`#`, `?`, `%`, spaces would break the link).
+fn url_segment(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
@@ -507,6 +522,11 @@ mod tests {
             input_tokens: 0,
             output_tokens: 0,
         }
+    }
+
+    #[test]
+    fn url_segment_encodes_fragment_chars() {
+        assert_eq!(url_segment("20261029-PR #5 50%?.html"), "20261029-PR%20%235%2050%25%3F.html");
     }
 
     #[test]

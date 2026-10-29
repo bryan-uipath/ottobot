@@ -77,7 +77,15 @@ impl Tray {
 fn apply_snapshot(app: &AppHandle, st: &Snapshot) {
     let t = app.state::<Tray>();
     let since = chrono::Local::now() - chrono::Duration::hours(24);
-    let failed = st.runs.iter().filter(|r| matches!(r.status, RunStatus::Failed(_)) && r.started_at >= since).count();
+    // Same rule as ATTENTION (`Snapshot::failures`): per skill, latest finished run failed and not dismissed.
+    let mut seen = std::collections::HashSet::new();
+    let failed = st
+        .runs
+        .iter()
+        .filter(|r| r.status != RunStatus::Running && seen.insert(&r.skill))
+        .filter(|r| matches!(r.status, RunStatus::Failed(_)) && r.started_at >= since)
+        .filter(|r| st.dismissed_failures.get(&r.skill) != Some(&r.id))
+        .count();
     let running = st.runs.iter().filter(|r| r.status == RunStatus::Running).count();
     let batt = st.power.as_ref().filter(|p| !p.on_ac);
     let warn = batt.map(|p| format!(" · ⚠ {}", p.summary())).unwrap_or_default();

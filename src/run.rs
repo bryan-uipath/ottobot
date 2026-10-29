@@ -51,8 +51,6 @@ pub enum Level {
 /// Severity the agent declares in `$OTTO_VERDICT` (`<store>/reports/<id>.verdict.json`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Verdict {
-    // Skills phrase it as "severity"/"verdict"; agents copy that word as the key.
-    #[serde(alias = "severity", alias = "verdict")]
     pub level: Level,
     #[serde(default, deserialize_with = "null_default")]
     pub incident_key: String,
@@ -74,9 +72,16 @@ fn null_default<'de, D: serde::Deserializer<'de>, T: Default + Deserialize<'de>>
 impl Verdict {
     /// Unknown level or bad JSON → None. Headline capped at 80 chars; `immediate` without evidence → `critical`.
     pub fn parse(s: &str) -> Option<Self> {
-        let mut v: Verdict = serde_json::from_str(s).ok()?;
+        let mut j: serde_json::Value = serde_json::from_str(s).ok()?;
+        // Skills phrase it as "severity"/"verdict" and agents copy that word as the key; `level` wins when present.
+        let o = j.as_object_mut()?;
+        if !o.contains_key("level") {
+            let alt = ["severity", "verdict"].into_iter().find_map(|k| o.get(k).cloned())?;
+            o.insert("level".into(), alt);
+        }
+        let mut v: Verdict = serde_json::from_value(j).ok()?;
         // Agents often skip the headline; the summary's first sentence stands in.
-        let head = if v.headline.trim().is_empty() { v.summary.split(". ").next().unwrap_or_default() } else { &v.headline };
+        let head = if v.headline.trim().is_empty() { first_sentence(&v.summary) } else { v.headline.as_str() };
         v.headline = crate::runner::truncate(head, 79); // + "…" = 80
         v.evidence.retain(|e| !e.trim().is_empty());
         if v.level == Level::Immediate && v.evidence.is_empty() {
@@ -134,6 +139,13 @@ pub fn one_liner(msg: &str) -> Option<String> {
 }
 
 /// "## **Done** `x` [PR](u)" → "Done x PR".
+/// Up to the first `.`/`!`/`?` followed by whitespace, or the first line.
+fn first_sentence(s: &str) -> &str {
+    let s = s.trim().lines().next().unwrap_or_default();
+    let end = s.char_indices().find(|&(i, c)| matches!(c, '.' | '!' | '?') && s[i + 1..].starts_with(char::is_whitespace));
+    end.map_or(s, |(i, _)| &s[..i])
+}
+
 fn strip_markdown(line: &str) -> String {
     let mut out = String::new();
     let mut rest = line;
@@ -145,7 +157,17 @@ fn strip_markdown(line: &str) -> String {
         rest = &rest[k + 1..];
     }
     out.push_str(rest);
-    out.replace(['`'], "").replace("**", "").trim_start_matches(['#', '-', '*', '>', ' ']).trim().to_string()
+    // Emphasis/code marks anywhere; a list/heading/quote marker only when followed by a space (keeps "-5%").
+    let out = out.replace(['`', '*'], "");
+    let mut t = out.trim();
+    loop {
+        let hashes = t.trim_start_matches('#');
+        let next =
+            ["- ", "> "].iter().find_map(|m| t.strip_prefix(m)).or((hashes.len() < t.len() && hashes.starts_with(' ')).then_some(hashes));
+        let Some(r) = next else { break };
+        t = r.trim_start();
+    }
+    t.to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -174,6 +196,16 @@ mod tests {
         assert_eq!(one_liner("Report saved to /x/r.html.\n- **3** jobs failed"), Some("3 jobs failed".into()));
         assert_eq!(one_liner("## 2 failures — [HTML report](/r.html) [x"), Some("2 failures — HTML report [x".into()));
         assert_eq!(one_liner("  \n"), None);
+        assert_eq!(one_liner("-5% availability vs baseline"), Some("-5% availability vs baseline".into()));
+        assert_eq!(one_liner("*All checks passed*"), Some("All checks passed".into()));
+    }
+
+    #[test]
+    fn verdict_level_aliases_and_sentence() {
+        let v = Verdict::parse(r#"{"level":"critical","verdict":"needs attention","summary":"Writes failing!\nRollback."}"#).unwrap();
+        assert_eq!((v.level, v.headline.as_str()), (Level::Critical, "Writes failing!"));
+        assert_eq!(Verdict::parse(r#"{"verdict":"normal"}"#).map(|v| v.level), Some(Level::Normal));
+        assert_eq!(Verdict::parse(r#"{"summary":"x"}"#), None);
     }
 
     #[test]
