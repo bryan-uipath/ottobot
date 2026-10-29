@@ -19,6 +19,9 @@ pub const WATCH_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// Script failures before it is deleted and recompiled.
 pub const MAX_SCRIPT_FAILURES: u32 = 3;
 
+/// Bump when the compile prompt changes what scripts can rely on (v2: $OTTO_MEMORY/$OTTO_LEDGER), so old scripts recompile.
+const COMPILE_VERSION: u32 = 2;
+
 /// What a checker (script or agent) reports. `key` dedupes occurrences.
 #[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 pub struct CheckResult {
@@ -79,7 +82,7 @@ impl Checker {
     }
 
     pub fn script_path(&self) -> PathBuf {
-        self.dir.join(format!("{}-{}", self.skill.name, self.skill.trigger_hash))
+        self.dir.join(format!("{}-{}-v{COMPILE_VERSION}", self.skill.name, self.skill.trigger_hash))
     }
 
     /// Compile if needed, run the script, fall back to an agent on any error.

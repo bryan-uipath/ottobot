@@ -213,7 +213,7 @@ as Terminal) and notification permission for it (macOS asks on the first one).
 ## Event triggers
 
 On first check, `checker_model` writes a script for the condition to
-`~/.ottobot/projects/<root>/checkers/<skill>-<trigger-hash>` and verifies it
+`~/.ottobot/projects/<root>/checkers/<skill>-<trigger-hash>-v<N>` (`N` bumps when ottobot changes what scripts get, forcing a recompile) and verifies it
 once. Every `check_every` the script runs (cwd = skills root, `$OTTO_SKILL`,
 `$OTTO_MEMORY`, `$OTTO_LEDGER` set) and prints one JSON object:
 
@@ -335,7 +335,7 @@ same scheme as `~/.claude/projects`:
 ```
 state.json            per-skill: hashes, last fired key/time, last run id, last check
 alerts.json           open/dismissed alerts per (skill, incident key), last notification per skill
-checkers/<skill>-<h>  compiled event checker scripts
+checkers/<skill>-<h>-v<N>  compiled event checker scripts
 runs/<id>.json        run metadata (status, cost, tokens, cwd)
 runs/<id>.jsonl       normalized event stream (text, tool calls, results, usage)
 ottobot.log.<date>    scheduler log

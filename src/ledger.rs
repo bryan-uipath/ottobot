@@ -31,7 +31,8 @@ pub fn items(v: &mut Value) -> Option<&mut Map<String, Value>> {
 
 /// Temp file + rename, so a concurrent reader never sees a half-written ledger.
 pub fn save(path: &Path, v: &Value) -> Result<()> {
-    let tmp = path.with_extension("json.otto-tmp");
+    // Per-process tmp name: the CLI and the daemon can save concurrently without renaming each other's file.
+    let tmp = path.with_extension(format!("json.otto-tmp-{}", std::process::id()));
     std::fs::write(&tmp, serde_json::to_string_pretty(v)?)?;
     std::fs::rename(tmp, path)?;
     Ok(())
