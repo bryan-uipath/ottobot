@@ -175,6 +175,13 @@ as normal. The headline is cut to 80 chars; `immediate` with no `evidence`
 becomes `critical`. The report gets a TL;DR box at the top (yellow critical,
 red immediate; normal is one dim line); all verdict text is HTML-escaped.
 
+Alerts: one per (skill, `incident_key`), in `<store>/alerts.json` (outlives the
+200-run window). A critical/immediate verdict opens or updates it (a later run
+can lower it); `normal` on the same key clears it, on another key it doesn't.
+Failed and unassessed runs never touch alerts. Dismiss (tray, or `Dismiss` on
+the socket) hides it until a strictly higher level arrives; opening the report
+doesn't dismiss.
+
 ## Event triggers
 
 On first check, `checker_model` writes a script for the condition to
@@ -258,14 +265,16 @@ Wire: newline-delimited JSON, one request → one response, connection reusable.
 {"type":"Events","run":"<id>","from":N}     → {"type":"Events","data":[…events N..]}
 {"type":"RunNow","skill":"<name>"}          → {"type":"Ok"} | {"type":"Error","data":"no skill …"}
 {"type":"Reload"}                           → {"type":"Ok"}
+{"type":"Dismiss","skill":"<name>","key":"<incident_key>"} → {"type":"Ok"} | {"type":"Error","data":"no alert …"}
 {"type":"Status"}                           → {"type":"Status","data":{root, pid, running, skills, last_failure, next_fire, runner_usage}}
 ```
 
 ## Tray
 
-`tray/` is a macOS menu-bar app (Tauri v2): tooltip with running/failed counts,
-a popover with the same NOW / ATTENTION / QUOTA / NEXT board, and Run now /
-Reload from its menu. It is a socket client only, so it needs the
+`tray/` is a macOS menu-bar app (Tauri v2): tooltip with alert and running/failed
+counts, a popover with ALERTS (when any) above the same NOW / ATTENTION / QUOTA /
+NEXT board, and Run now / Reload from its menu. The icon gets a red dot for an
+immediate alert, yellow for critical, else the battery badge. It is a socket client only, so it needs the
 daemon. Build: `cd tray/src-tauri && cargo tauri build`. See `tray/README.md`.
 
 ## Runners and usage
@@ -293,6 +302,7 @@ same scheme as `~/.claude/projects`:
 
 ```
 state.json            per-skill: hashes, last fired key/time, last run id, last check
+alerts.json           open/dismissed alerts per (skill, incident key)
 checkers/<skill>-<h>  compiled event checker scripts
 runs/<id>.json        run metadata (status, cost, tokens, cwd)
 runs/<id>.jsonl       normalized event stream (text, tool calls, results, usage)

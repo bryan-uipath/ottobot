@@ -3,7 +3,7 @@
 mod sock;
 
 use anyhow::{bail, Context, Result};
-use sock::{Conn, Request, Response, RunStatus, Snapshot};
+use sock::{Conn, Level, Request, Response, RunStatus, Snapshot};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -18,6 +18,15 @@ const POLL_EVERY: Duration = Duration::from_secs(15);
 /// Skill names + latest report per skill: what the tray menu is built from.
 type MenuKey = (Vec<String>, Vec<(String, PathBuf)>);
 
+/// Tray icon, highest precedence first: alerts outrank the battery badge.
+#[derive(Clone, Copy, PartialEq)]
+enum Icon {
+    Immediate,
+    Critical,
+    Battery,
+    Plain,
+}
+
 #[derive(Default)]
 struct Tray {
     conn: tokio::sync::Mutex<Option<Conn>>,
@@ -29,8 +38,8 @@ struct Tray {
     store_dir: Mutex<Option<PathBuf>>,
     /// Skills root of the last daemon seen; `Skills` opens it in Finder.
     root: Mutex<Option<std::path::PathBuf>>,
-    /// Which icon is showing (Some(true) = battery badge), to avoid resetting it every poll.
-    icon_warn: Mutex<Option<bool>>,
+    /// Which icon is showing, to avoid resetting it every poll.
+    icon: Mutex<Option<Icon>>,
     /// When blur hid the popover; a tray click right after must not reopen it.
     hidden_at: Mutex<Option<Instant>>,
 }
@@ -69,8 +78,18 @@ fn apply_snapshot(app: &AppHandle, st: &Snapshot) {
     let running = st.runs.iter().filter(|r| r.status == RunStatus::Running).count();
     let batt = st.power.as_ref().filter(|p| !p.on_ac);
     let warn = batt.map(|p| format!(" · ⚠ {}", p.summary())).unwrap_or_default();
-    tooltip(app, &format!("ottobot · {running} running · {failed} failed{warn}"));
-    set_icon(app, batt.is_some());
+    let n = st.alerts.len();
+    let alerts = if n == 0 { String::new() } else { format!("{n} alert{} · ", if n == 1 { "" } else { "s" }) };
+    tooltip(app, &format!("{alerts}ottobot · {running} running · {failed} failed{warn}"));
+    set_icon(
+        app,
+        match st.alerts.iter().map(|a| a.level).max() {
+            Some(Level::Immediate) => Icon::Immediate,
+            Some(Level::Critical) => Icon::Critical,
+            _ if batt.is_some() => Icon::Battery,
+            _ => Icon::Plain,
+        },
+    );
     let names: Vec<String> = st.skills.iter().map(|v| v.name.clone()).collect();
     // Latest report per skill; runs are newest first.
     let mut seen = std::collections::HashSet::new();
@@ -89,17 +108,23 @@ fn apply_snapshot(app: &AppHandle, st: &Snapshot) {
     }
 }
 
-/// Badged template icon while on battery (runs may be cut short by sleep); plain otherwise.
-fn set_icon(app: &AppHandle, warn: bool) {
+/// Yellow/red dot for the worst active alert; else badged template icon while on battery (runs may be cut
+/// short by sleep); plain otherwise. Coloured icons can't be templates: their glyph carries a white halo instead.
+fn set_icon(app: &AppHandle, icon: Icon) {
     let t = app.state::<Tray>();
-    if *t.icon_warn.lock().unwrap() == Some(warn) {
+    if *t.icon.lock().unwrap() == Some(icon) {
         return;
     }
-    let bytes: &[u8] = if warn { include_bytes!("../icons/tray-warn.png") } else { include_bytes!("../icons/tray.png") };
+    let bytes: &[u8] = match icon {
+        Icon::Immediate => include_bytes!("../icons/tray-immediate.png"),
+        Icon::Critical => include_bytes!("../icons/tray-critical.png"),
+        Icon::Battery => include_bytes!("../icons/tray-warn.png"),
+        Icon::Plain => include_bytes!("../icons/tray.png"),
+    };
     if let (Ok(img), Some(tray)) = (tauri::image::Image::from_bytes(bytes), app.tray_by_id(TRAY)) {
         let _ = tray.set_icon(Some(img));
-        let _ = tray.set_icon_as_template(true);
-        *t.icon_warn.lock().unwrap() = Some(warn);
+        let _ = tray.set_icon_as_template(matches!(icon, Icon::Battery | Icon::Plain));
+        *t.icon.lock().unwrap() = Some(icon);
     }
 }
 
@@ -115,8 +140,8 @@ async fn refresh(app: &AppHandle) -> Result<Snapshot> {
     match &res {
         Ok(s) => apply_snapshot(app, s),
         Err(e) => {
-            // No daemon → no power data; don't leave a stale battery badge up.
-            set_icon(app, false);
+            // No daemon → no power or alert data; don't leave a stale badge up.
+            set_icon(app, Icon::Plain);
             let old = format!("{e:#}").contains(sock::OLD_PROTOCOL);
             tooltip(app, &format!("ottobot · {}", if old { sock::OLD_PROTOCOL } else { "daemon not running" }));
         }
@@ -199,6 +224,11 @@ async fn run_now(t: State<'_, Tray>, skill: String) -> Result<(), String> {
     t.request(Request::RunNow { skill }).await.map(|_| ()).map_err(|e| format!("{e:#}"))
 }
 
+#[tauri::command]
+async fn dismiss(t: State<'_, Tray>, skill: String, key: String) -> Result<(), String> {
+    t.request(Request::Dismiss { skill, key }).await.map(|_| ()).map_err(|e| format!("{e:#}"))
+}
+
 /// Skills folder in Finder. Falls back to ~/.ottobot/skills when no daemon has been seen.
 #[tauri::command]
 fn open_skills(t: State<'_, Tray>) -> Result<(), String> {
@@ -265,7 +295,7 @@ async fn menu_action(app: AppHandle, id: String) {
 pub fn run() {
     tauri::Builder::default()
         .manage(Tray::default())
-        .invoke_handler(tauri::generate_handler![snapshot, run_now, open_skills, open_report, quit])
+        .invoke_handler(tauri::generate_handler![snapshot, run_now, dismiss, open_skills, open_report, quit])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);

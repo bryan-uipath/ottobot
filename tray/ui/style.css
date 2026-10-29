@@ -92,7 +92,15 @@ body::after { top: 10px; border-bottom-color: var(--bg-1); }
 .spin { flex: none; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--brand-dim); border-top-color: var(--brand); animation: spin .9s linear infinite; }
 .dot { flex: none; width: 10px; text-align: center; color: var(--fg-light); }
 .x { flex: none; width: 10px; text-align: center; color: var(--err); }
-.sub .report { color: var(--brand); }
+.sub .report, .row .report { color: var(--brand); }
+.row .report { flex: none; padding: 0 4px; font-size: 12px; }
+.lvl { flex: none; width: 10px; text-align: center; }
+.lvl.critical { color: var(--warn); }
+.lvl.immediate { color: var(--err); }
+/* Headline + summary wrap (1–4 sentences); indented under the skill name. */
+.alert { margin: -2px 0 6px 18px; font-size: 12px; }
+.alert .hl { color: var(--fg); }
+.alert .sm { color: var(--fg-de); }
 .link { cursor: pointer; border-radius: 6px; }
 .link:hover { background: var(--bg-hover); }
 .sub.link { margin-left: 14px; padding-left: 6px; }

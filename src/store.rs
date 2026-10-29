@@ -1,6 +1,7 @@
 //! Persistent state under ~/.ottobot/<hash-of-skills-root>/.
 
 use crate::run::{Level, Run, RunEvent, RunMeta, Verdict};
+use crate::state::Alert;
 use anyhow::Result;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
@@ -58,6 +59,18 @@ impl Store {
         let tmp = self.dir.join("state.json.tmp");
         fs::write(&tmp, serde_json::to_string_pretty(s)?)?;
         fs::rename(tmp, self.dir.join("state.json"))?;
+        Ok(())
+    }
+
+    /// Separate from state.json: only written under the shared-state lock, so it never races the scheduler's state saves.
+    pub fn load_alerts(&self) -> Vec<Alert> {
+        fs::read_to_string(self.dir.join("alerts.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+
+    pub fn save_alerts(&self, a: &[Alert]) -> Result<()> {
+        let tmp = self.dir.join("alerts.json.tmp");
+        fs::write(&tmp, serde_json::to_string_pretty(a)?)?;
+        fs::rename(tmp, self.dir.join("alerts.json"))?;
         Ok(())
     }
 
