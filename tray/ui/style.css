@@ -92,7 +92,10 @@ body::after { top: 10px; border-bottom-color: var(--bg-1); }
 .spin { flex: none; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--brand-dim); border-top-color: var(--brand); animation: spin .9s linear infinite; }
 .dot { flex: none; width: 10px; text-align: center; color: var(--fg-light); }
 .x { flex: none; width: 10px; text-align: center; color: var(--err); }
-.sub .report { color: var(--brand); text-decoration: none; }
+.sub .report { color: var(--brand); }
+.link { cursor: pointer; border-radius: 6px; }
+.link:hover { background: var(--bg-hover); }
+.sub.link { margin-left: 14px; padding-left: 6px; }
 .ok { flex: none; width: 10px; text-align: center; color: var(--ok); }
 @keyframes spin { to { transform: rotate(360deg); } }
 

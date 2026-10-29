@@ -31,6 +31,8 @@ pub struct RunMeta {
     pub skill: String,
     pub runner: String,
     pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
     pub started_at: DateTime<Local>,
     pub finished_at: Option<DateTime<Local>>,
     pub status: RunStatus,

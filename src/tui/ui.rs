@@ -276,14 +276,8 @@ fn draw_board(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
             Style::default(),
             w,
         ));
-        let tool = m.events.get(&r.id).and_then(|es| {
-            es.iter().rev().find_map(|e| match e {
-                RunEvent::ToolUse { name, summary } => Some(format!("  ⚙ {name}  {summary}")),
-                _ => None,
-            })
-        });
-        if let Some(t) = tool {
-            lines.push(dim_line(fit(&t, w)));
+        if let Some(t) = live_line(m, &r.id) {
+            lines.push(dim_line(fit(&format!("  {t}"), w)));
         }
     }
     more(&mut lines, b.now_more);
@@ -379,9 +373,19 @@ fn draw_board(f: &mut Frame, m: &Model, ui: &Ui, area: Rect) {
             line.spans.push(Span::styled(format!("  {}", v.note), dim()));
         }
         lines.push(line);
-        // One-line summary of the latest finished run.
-        if let Some(s) = latest_run(st, v).filter(|r| r.status != RunStatus::Running).and_then(|r| r.summary.as_deref()) {
-            lines.push(dim_line(format!("  ↳ {}", fit(s, w.saturating_sub(4)))));
+        // Running: what it's doing now (never the previous run's summary). Else: latest finished run's summary.
+        match (&v.active_run, latest_run(st, v)) {
+            (Some(id), _) => {
+                if let Some(t) = live_line(m, id) {
+                    lines.push(Line::from(Span::styled(fit(&format!("  {t}"), w), Style::default().fg(ACCENT))));
+                }
+            }
+            (None, Some(r)) => {
+                if let Some(s) = r.summary.as_deref() {
+                    lines.push(dim_line(format!("  ↳ {}", fit(s, w.saturating_sub(4)))));
+                }
+            }
+            _ => {}
         }
     }
 
@@ -653,10 +657,21 @@ fn kv(k: &str, v: String) -> Line<'static> {
 }
 
 /// `runner/model`; model from the run meta, else the session's Init event.
+/// What a running run is doing right now: its last tool call, else its last text line.
+fn live_line(m: &Model, id: &str) -> Option<String> {
+    let es = m.events.get(id)?;
+    es.iter().rev().find_map(|e| match e {
+        RunEvent::ToolUse { name, summary } => Some(format!("⚙ {name}  {summary}")),
+        RunEvent::Text(t) => t.lines().rev().find(|l| !l.trim().is_empty()).map(|l| format!("▸ {}", l.trim())),
+        _ => None,
+    })
+}
+
+/// `runner/model@effort`; falls back to the session's Init model when the meta has none.
 fn runner_model(r: &RunMeta, init: Option<&str>) -> String {
-    match r.model.as_deref().or(init) {
-        Some(m) => format!("{}/{m}", r.runner),
-        None => r.runner.clone(),
+    match (&r.model, init) {
+        (None, Some(m)) => format!("{}/{m}", r.runner),
+        _ => r.agent_label(),
     }
 }
 

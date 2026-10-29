@@ -286,6 +286,7 @@ impl Scheduler {
             skill: skill.name.clone(),
             runner: runner_name,
             model: choice.model,
+            effort: choice.effort,
             trigger_key: key.to_string(),
             cwd: inv.cwd.clone(),
             started_at: Local::now(),
