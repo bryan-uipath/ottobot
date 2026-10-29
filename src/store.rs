@@ -513,6 +513,10 @@ mod tests {
     fn verdict_validation() {
         assert_eq!(Verdict::parse(r#"{"level":"panic","headline":"x"}"#), None);
         assert_eq!(Verdict::parse("not json"), None);
+        // Shape real agents wrote: `severity` for level, no headline.
+        let v =
+            Verdict::parse(r#"{"severity":"critical","incident_key":"cli#5573","summary":"Unit tests red. No new feedback."}"#).unwrap();
+        assert_eq!((v.level, v.headline.as_str()), (Level::Critical, "Unit tests red"));
         let v = Verdict::parse(&format!(r#"{{"level":"immediate","headline":"{}","evidence":[" "]}}"#, "h".repeat(100))).unwrap();
         assert_eq!(v.level, Level::Critical);
         assert_eq!(v.headline.chars().count(), 80); // 79 + ellipsis

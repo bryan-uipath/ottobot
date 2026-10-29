@@ -51,6 +51,8 @@ pub enum Level {
 /// Severity the agent declares in `$OTTO_VERDICT` (`<store>/reports/<id>.verdict.json`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Verdict {
+    // Skills phrase it as "severity"/"verdict"; agents copy that word as the key.
+    #[serde(alias = "severity", alias = "verdict")]
     pub level: Level,
     #[serde(default, deserialize_with = "null_default")]
     pub incident_key: String,
@@ -73,7 +75,9 @@ impl Verdict {
     /// Unknown level or bad JSON → None. Headline capped at 80 chars; `immediate` without evidence → `critical`.
     pub fn parse(s: &str) -> Option<Self> {
         let mut v: Verdict = serde_json::from_str(s).ok()?;
-        v.headline = crate::runner::truncate(&v.headline, 79); // + "…" = 80
+        // Agents often skip the headline; the summary's first sentence stands in.
+        let head = if v.headline.trim().is_empty() { v.summary.split(". ").next().unwrap_or_default() } else { &v.headline };
+        v.headline = crate::runner::truncate(head, 79); // + "…" = 80
         v.evidence.retain(|e| !e.trim().is_empty());
         if v.level == Level::Immediate && v.evidence.is_empty() {
             v.level = Level::Critical;
