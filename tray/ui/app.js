@@ -86,9 +86,13 @@ function render(st, tray) {
     const btn = el('button', null, 'dismiss');
     btn.onclick = () => invoke('dismiss', { skill: a.skill, key: a.key }).then(refresh, refresh);
     out.push(row(el('span', `lvl ${a.level}`, '●'), a.skill, `${short(now - Date.parse(a.first_seen))} ago`, ...extra, btn));
-    // Two one-line bullets at most: the headline, then the summary's first sentence. Full text on hover.
-    const first = (a.summary || '').split(/(?<=[.!?])\s+/)[0];
-    const lines = [a.headline, first].filter((l, i, xs) => l && xs.indexOf(l) === i).slice(0, 2);
+    // Two one-line bullets at most: the headline, then the summary's first sentence (cut like `first_sentence`
+    // in src/run.rs, which fills an empty headline — so the same sentence isn't shown twice). Full text on hover.
+    const firstLine = (a.summary || '').trim().split('\n')[0];
+    const m = firstLine.match(/[.!?](\s|$)/);
+    const first = m ? firstLine.slice(0, m.index) : firstLine;
+    const head = (a.headline || '').replace(/…$/, '');
+    const lines = [a.headline, head && first.startsWith(head) ? '' : first].filter(Boolean);
     const ul = el('ul', 'alert', null, ...lines.map((l, i) => el('li', i ? 'sm' : 'hl', l)));
     ul.title = [a.headline, a.summary].filter(Boolean).join('\n\n');
     out.push(ul);
