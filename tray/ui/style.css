@@ -98,8 +98,9 @@ body::after { top: 10px; border-bottom-color: var(--bg-1); }
 .lvl { flex: none; width: 10px; text-align: center; }
 .lvl.critical { color: var(--warn); }
 .lvl.immediate { color: var(--err); }
-/* Headline + summary wrap (1–4 sentences); indented under the skill name. */
-.alert { margin: -2px 0 6px 18px; font-size: 12px; }
+/* Headline + first summary sentence, one line each; indented under the skill name. */
+.alert { margin: -2px 0 6px 18px; padding-left: 0; font-size: 12px; list-style: disc inside; }
+.alert li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .alert .hl { color: var(--fg); }
 .alert .sm { color: var(--fg-de); }
 .link { cursor: pointer; border-radius: 6px; }
