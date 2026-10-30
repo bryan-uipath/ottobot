@@ -146,7 +146,7 @@ impl Store {
     }
 
     /// `reconcile: false` while the scheduler runs: an on-disk `Running` may be live, not crashed.
-    fn read_metas(&self, reconcile: bool) -> Vec<RunMeta> {
+    pub fn read_metas(&self, reconcile: bool) -> Vec<RunMeta> {
         let Ok(rd) = fs::read_dir(self.dir.join("runs")) else { return vec![] };
         let mut metas: Vec<RunMeta> = rd
             .filter_map(Result::ok)

@@ -120,6 +120,9 @@ otto ledger <skill> --rm <id>    forget one, so the trigger sees it again
 otto ledger <skill> --clear      forget all
 ```
 
+`Previous runs` in the body prompt lists the skill's last 5 finished runs (time, status, level, incident key, headline, report), so a known, unchanged issue stays `normal`.
+`$OTTO_HISTORY` (`$OTTO_MEMORY/history.json`) is the same as JSON, rewritten before each run and check; set for the body, checker scripts, and the watcher.
+
 Trust: a watcher reads logs, Slack and telemetry, any of which can carry
 injected text, and what it writes to `notes.md` steers later runs. Both prompts
 mark fetched content and the notebook as data, not instructions; keep superfan
@@ -216,7 +219,7 @@ as Terminal) and notification permission for it (macOS asks on the first one).
 On first check, `checker_model` writes a script for the condition to
 `~/.ottobot/projects/<root>/checkers/<skill>-<trigger-hash>-v<N>` (`N` bumps when ottobot changes what scripts get, forcing a recompile) and verifies it
 once. Every `check_every` the script runs (cwd = skills root, `$OTTO_SKILL`,
-`$OTTO_MEMORY`, `$OTTO_LEDGER` set) and prints one JSON object:
+`$OTTO_MEMORY`, `$OTTO_LEDGER`, `$OTTO_HISTORY` set) and prints one JSON object:
 
 ```json
 {"fired": true, "key": "run-1234", "summary": "playwright-ci #1234 failed: 3 tests"}

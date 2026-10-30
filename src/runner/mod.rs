@@ -19,7 +19,7 @@ pub struct Invocation {
     pub permission_mode: Option<String>,
     /// Where the agent should write an HTML report, exported as `$OTTO_REPORT` (plus `_MD`, `$OTTO_VERDICT` siblings). None for checker runs.
     pub report: Option<std::path::PathBuf>,
-    /// Per-skill directory that persists across runs, exported as `$OTTO_MEMORY` (and `$OTTO_LEDGER` inside it).
+    /// Per-skill directory that persists across runs, exported as `$OTTO_MEMORY` (and `$OTTO_LEDGER`, `$OTTO_HISTORY` inside it).
     pub memory: Option<std::path::PathBuf>,
     /// Key of the last fire ottobot accepted for this skill, exported as `$OTTO_LAST_FIRED_KEY` (watch checks).
     pub last_fired_key: Option<String>,
@@ -32,7 +32,7 @@ impl Invocation {
             cmd.env("OTTO_REPORT", r).env("OTTO_REPORT_MD", r.with_extension("md")).env("OTTO_VERDICT", r.with_extension("verdict.json"));
         }
         if let Some(m) = &self.memory {
-            cmd.env("OTTO_MEMORY", m).env("OTTO_LEDGER", crate::ledger::path(m));
+            cmd.env("OTTO_MEMORY", m).env("OTTO_LEDGER", crate::ledger::path(m)).env("OTTO_HISTORY", crate::history::path(m));
         }
         if let Some(k) = &self.last_fired_key {
             cmd.env("OTTO_LAST_FIRED_KEY", k);
