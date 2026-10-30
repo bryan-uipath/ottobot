@@ -35,6 +35,15 @@ pub struct RunMeta {
     /// The agent's `$OTTO_VERDICT`, validated. None = unassessed (missing or invalid), never "normal".
     #[serde(default)]
     pub verdict: Option<Verdict>,
+    /// How the child ended: `code 1`, `signal 9 (SIGKILL)`. None until it exits (or on timeout).
+    #[serde(default)]
+    pub exit: Option<String>,
+    /// Program + args as run, prompt replaced by `<prompt: N chars>`.
+    #[serde(default)]
+    pub command: Option<String>,
+    /// Last 20 non-empty stderr lines, each ≤300 chars.
+    #[serde(default)]
+    pub stderr_tail: Vec<String>,
     pub cost_usd: Option<f64>,
     pub input_tokens: u64,
     pub output_tokens: u64,

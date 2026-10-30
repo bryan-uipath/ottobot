@@ -327,6 +327,9 @@ impl Scheduler {
             summary: None,
             report: None,
             verdict: None,
+            exit: None,
+            command: None,
+            stderr_tail: vec![],
         };
         self.store.save_run_meta(&meta)?;
         {
@@ -346,15 +349,15 @@ impl Scheduler {
         let (ttl, ledger) = (skill.front.ledger_ttl(), self.store.ledger_path(&skill.name));
         tokio::spawn(async move {
             let status = match execute(runner, inv, &id, &shared, &store, timeout).await {
-                Ok(true) => RunStatus::Succeeded,
-                Ok(false) => RunStatus::Failed("runner reported error".into()),
+                Ok(None) => RunStatus::Succeeded,
+                Ok(Some(why)) => RunStatus::Failed(why),
                 Err(e) => RunStatus::Failed(format!("{e:#}")),
             };
             let mut sh = shared.lock().unwrap();
             sh.finish_run(&id, status.clone());
             if let Some(r) = sh.run_mut(&id) {
                 // Whatever happened (incl. timeout), a report on disk counts; else a stub, so every run has one.
-                store.finalize_report(&mut r.meta);
+                store.finalize_report(&mut r.meta, &r.events);
                 let _ = store.save_run_meta(&r.meta);
                 let meta = r.meta.clone();
                 if sh.record_verdict(&meta) {
@@ -425,7 +428,7 @@ fn next_check(last: Option<DateTime<Local>>, every: Duration, now: DateTime<Loca
     }
 }
 
-/// Stream the child's stdout/stderr into run events. Returns runner's ok flag.
+/// Stream the child's stdout/stderr into run events. Returns None on success, else why it failed.
 async fn execute(
     runner: Box<dyn runner::Runner>,
     inv: Invocation,
@@ -433,9 +436,13 @@ async fn execute(
     shared: &Shared,
     store: &Store,
     timeout: Duration,
-) -> Result<bool> {
+) -> Result<Option<String>> {
     let mut cmd = runner.command(&inv);
     inv.apply_env(&mut cmd);
+    if let Some(r) = shared.lock().unwrap().run_mut(id) {
+        r.meta.command = Some(command_line(cmd.as_std(), &inv.prompt));
+    }
+    let (name, started) = (runner.name(), std::time::Instant::now());
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     let mut child = cmd.spawn()?;
     let stdout = child.stdout.take().expect("piped");
@@ -458,7 +465,7 @@ async fn execute(
             }
         }
     });
-    let mut ok = false;
+    let mut done: Option<(bool, String)> = None;
     let deadline = tokio::time::sleep(timeout);
     tokio::pin!(deadline);
     loop {
@@ -468,8 +475,8 @@ async fn execute(
                     let _ = store.append_event(id, &e);
                     let mut sh = shared.lock().unwrap();
                     match &e {
-                        RunEvent::Done { ok: o, summary } => {
-                            ok = *o;
+                        RunEvent::Done { ok, summary } => {
+                            done = Some((*ok, summary.clone()));
                             if let Some(r) = sh.run_mut(id) {
                                 r.meta.summary = crate::run::one_liner(summary);
                             }
@@ -479,6 +486,11 @@ async fn execute(
                                 r.meta.input_tokens = *input;
                                 r.meta.output_tokens = *output;
                                 r.meta.cost_usd = *cost_usd;
+                            }
+                        }
+                        RunEvent::Stderr(l) if !l.trim().is_empty() => {
+                            if let Some(r) = sh.run_mut(id) {
+                                push_tail(&mut r.meta.stderr_tail, l);
                             }
                         }
                         _ => {}
@@ -494,5 +506,129 @@ async fn execute(
         }
     }
     let status = child.wait().await?;
-    Ok(ok && status.success())
+    let mut sh = shared.lock().unwrap();
+    let r = sh.run_mut(id);
+    let tail = r.as_ref().and_then(|r| r.meta.stderr_tail.last().cloned());
+    if let Some(r) = r {
+        r.meta.exit = Some(exit_text(status));
+    }
+    Ok(failure(name, done.as_ref().map(|(ok, s)| (*ok, s.as_str())), status, tail.as_deref(), started.elapsed()))
+}
+
+const STDERR_TAIL: usize = 20;
+
+/// Keep the last `STDERR_TAIL` lines, each ≤300 chars.
+fn push_tail(tail: &mut Vec<String>, line: &str) {
+    tail.push(runner::truncate(line, 300));
+    if tail.len() > STDERR_TAIL {
+        tail.remove(0);
+    }
+}
+
+/// `codex exec --json … <prompt: 812 chars>`: the prompt is replaced, env is never included.
+fn command_line(cmd: &std::process::Command, prompt: &str) -> String {
+    let args =
+        cmd.get_args()
+            .map(|a| if a == prompt { format!("<prompt: {} chars>", prompt.chars().count()) } else { quote(&a.to_string_lossy()) });
+    std::iter::once(quote(&cmd.get_program().to_string_lossy())).chain(args).collect::<Vec<_>>().join(" ")
+}
+
+fn quote(s: &str) -> String {
+    if s.is_empty() || s.contains(char::is_whitespace) {
+        format!("'{s}'")
+    } else {
+        s.to_string()
+    }
+}
+
+/// `code 1` / `signal 9 (SIGKILL)`.
+fn exit_text(status: std::process::ExitStatus) -> String {
+    use std::os::unix::process::ExitStatusExt;
+    match (status.code(), status.signal()) {
+        (Some(c), _) => format!("code {c}"),
+        (None, Some(n)) => signal_text(n),
+        (None, None) => "unknown".into(),
+    }
+}
+
+/// `signal 9 (SIGKILL)`; uncommon numbers stay bare (`signal 7`).
+fn signal_text(n: i32) -> String {
+    let name = match n {
+        libc::SIGKILL => "SIGKILL",
+        libc::SIGTERM => "SIGTERM",
+        libc::SIGINT => "SIGINT",
+        libc::SIGSEGV => "SIGSEGV",
+        libc::SIGABRT => "SIGABRT",
+        libc::SIGHUP => "SIGHUP",
+        _ => return format!("signal {n}"),
+    };
+    format!("signal {n} ({name})")
+}
+
+/// None = success. Else the ATTENTION line: a signal beats the runner's own Done, which beats the exit code.
+fn failure(
+    name: &str,
+    done: Option<(bool, &str)>,
+    status: std::process::ExitStatus,
+    stderr: Option<&str>,
+    elapsed: Duration,
+) -> Option<String> {
+    use std::os::unix::process::ExitStatusExt;
+    let secs = elapsed.as_secs();
+    if let Some(n) = status.signal() {
+        return Some(format!("{name} exited by {} after {}m{:02}s", signal_text(n), secs / 60, secs % 60));
+    }
+    match (done, status.code()) {
+        (Some((false, s)), _) => {
+            Some(format!("{name} reported failure: {}", s.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("no summary")))
+        }
+        (_, Some(c)) if c != 0 => Some(format!("{name} exited with code {c}{}", stderr.map(|l| format!(" · {l}")).unwrap_or_default())),
+        (None, _) => Some(format!("{name} exited 0 without a final message")),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::ExitStatus;
+
+    #[test]
+    fn failure_reasons() {
+        let (kill, code1, ok) = (ExitStatus::from_raw(9), ExitStatus::from_raw(1 << 8), ExitStatus::from_raw(0));
+        let t = Duration::from_secs(344);
+        assert_eq!(failure("codex", None, kill, None, t).as_deref(), Some("codex exited by signal 9 (SIGKILL) after 5m44s"));
+        assert_eq!(exit_text(kill), "signal 9 (SIGKILL)");
+        assert_eq!(exit_text(ExitStatus::from_raw(7)), "signal 7");
+        assert_eq!(exit_text(code1), "code 1");
+        assert_eq!(failure("codex", None, code1, Some("auth expired"), t).as_deref(), Some("codex exited with code 1 · auth expired"));
+        assert_eq!(failure("codex", None, code1, None, t).as_deref(), Some("codex exited with code 1"));
+        assert_eq!(failure("codex", None, ok, None, t).as_deref(), Some("codex exited 0 without a final message"));
+        assert_eq!(
+            failure("claude", Some((false, "\n  rate limited\nmore")), ok, None, t).as_deref(),
+            Some("claude reported failure: rate limited")
+        );
+        assert_eq!(failure("claude", Some((true, "done")), ok, None, t), None);
+        assert_eq!(failure("claude", Some((true, "done")), code1, None, t).as_deref(), Some("claude exited with code 1"));
+    }
+
+    #[test]
+    fn command_line_redacts_prompt() {
+        let prompt = "do the thing";
+        let mut c = std::process::Command::new("codex");
+        c.args(["exec", "-C", "/a b"]).arg(prompt).env("TOKEN", "t0ken");
+        assert_eq!(command_line(&c, prompt), "codex exec -C '/a b' <prompt: 12 chars>");
+    }
+
+    #[test]
+    fn stderr_tail_is_bounded() {
+        let mut tail = vec![];
+        for i in 0..25 {
+            push_tail(&mut tail, &format!("{i} {}", "x".repeat(400)));
+        }
+        assert_eq!(tail.len(), STDERR_TAIL);
+        assert!(tail[0].starts_with("5 ") && tail[19].starts_with("24 "));
+        assert!(tail.iter().all(|l| l.chars().count() == 301)); // 300 + ellipsis
+    }
 }
