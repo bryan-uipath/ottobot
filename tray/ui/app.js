@@ -86,7 +86,12 @@ function render(st, tray) {
     const btn = el('button', null, 'dismiss');
     btn.onclick = () => invoke('dismiss', { skill: a.skill, key: a.key }).then(refresh, refresh);
     out.push(row(el('span', `lvl ${a.level}`, '●'), a.skill, `${short(now - Date.parse(a.first_seen))} ago`, ...extra, btn));
-    out.push(el('div', 'alert', null, el('div', 'hl', a.headline), a.summary ? el('div', 'sm', a.summary) : ''));
+    // Two one-line bullets at most: the headline, then the summary's first sentence. Full text on hover.
+    const first = (a.summary || '').split(/(?<=[.!?])\s+/)[0];
+    const lines = [a.headline, first].filter((l, i, xs) => l && xs.indexOf(l) === i).slice(0, 2);
+    const ul = el('ul', 'alert', null, ...lines.map((l, i) => el('li', i ? 'sm' : 'hl', l)));
+    ul.title = [a.headline, a.summary].filter(Boolean).join('\n\n');
+    out.push(ul);
   }
 
   out.push(el('div', 'label', 'now'));
