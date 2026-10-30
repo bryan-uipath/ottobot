@@ -117,7 +117,7 @@ impl Store {
     }
 
     /// Every finished run has a report: the agent's .html, else its .md, else a stub ottobot writes.
-    pub fn finalize_report(&self, m: &mut RunMeta) {
+    pub fn finalize_report(&self, m: &mut RunMeta, events: &[RunEvent]) {
         let html = self.report_path(&m.id);
         let md = html.with_extension("md");
         m.verdict = fs::read_to_string(html.with_extension("verdict.json")).ok().and_then(|s| Verdict::parse(&s));
@@ -125,7 +125,7 @@ impl Store {
         // stub written during crash reconciliation never hides the agent's real notes.
         let ours = fs::read_to_string(&html).map(|s| s.starts_with(RENDERED_MARK)).unwrap_or(false);
         if html.is_file() && !ours {
-            let _ = stamp_html(&html, m);
+            let _ = stamp_html(&html, m, events);
             m.report = Some(html);
             return;
         }
@@ -134,7 +134,7 @@ impl Store {
             return;
         }
         // Markdown stays the source; the rendered page is what opens, so links are clickable.
-        m.report = Some(match render_markdown(&md, &html, m) {
+        m.report = Some(match render_markdown(&md, &html, m, events) {
             Ok(()) => html,
             Err(_) => md,
         });
@@ -156,7 +156,16 @@ impl Store {
                 if reconcile && meta.status == crate::run::RunStatus::Running {
                     meta.status = crate::run::RunStatus::Failed("interrupted (ottobot exited)".into());
                     meta.finished_at = meta.finished_at.or(Some(Local::now()));
-                    self.finalize_report(&mut meta);
+                    let events = self.load_events(&meta.id);
+                    // Only the spawn-time meta reached disk; rebuild the stderr tail from the event log.
+                    for e in &events {
+                        if let RunEvent::Stderr(l) = e {
+                            if !l.trim().is_empty() {
+                                crate::run::push_tail(&mut meta.stderr_tail, l);
+                            }
+                        }
+                    }
+                    self.finalize_report(&mut meta, &events);
                     let _ = self.save_run_meta(&meta);
                 }
                 Some(meta)
@@ -180,21 +189,18 @@ impl Store {
 
     /// Newest first, with events.
     pub fn load_runs(&self, limit: usize) -> Vec<Run> {
-        self.load_metas()
-            .into_iter()
-            .take(limit)
-            .map(|meta| {
-                let events = fs::read_to_string(self.dir.join("runs").join(format!("{}.jsonl", meta.id)))
-                    .map(|s| s.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
-                    .unwrap_or_default();
-                Run { meta, events }
-            })
-            .collect()
+        self.load_metas().into_iter().take(limit).map(|meta| Run { events: self.load_events(&meta.id), meta }).collect()
+    }
+
+    fn load_events(&self, id: &str) -> Vec<RunEvent> {
+        fs::read_to_string(self.dir.join("runs").join(format!("{id}.jsonl")))
+            .map(|s| s.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
+            .unwrap_or_default()
     }
 }
 
 /// `.md` → self-contained dark-friendly `.html` (future-dark tokens). Bare URLs become links too.
-fn render_markdown(md: &Path, html: &Path, m: &RunMeta) -> std::io::Result<()> {
+fn render_markdown(md: &Path, html: &Path, m: &RunMeta, run_events: &[RunEvent]) -> std::io::Result<()> {
     use pulldown_cmark::{html::push_html, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd};
     let title = format!("{} · {}", m.skill, m.started_at.format("%Y-%m-%d %H:%M"));
     let src = fs::read_to_string(md)?;
@@ -254,7 +260,7 @@ fn render_markdown(md: &Path, html: &Path, m: &RunMeta) -> std::io::Result<()> {
          <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:\">\
          <title>{title}</title><style>{REPORT_CSS}{VERDICT_CSS}</style><main>{meta}{verdict}{body}</main>",
         title = html_escape(&title),
-        meta = meta_block(m),
+        meta = meta_block(m, run_events),
         verdict = verdict_block(m),
     );
     fs::write(html, page)
@@ -341,7 +347,7 @@ fn split_urls(text: &str) -> Vec<Result<&str, &str>> {
 }
 
 /// Who ran this: skill, run id, status, runner/model@effort, duration, cost. Same text for both report kinds.
-fn meta_block(m: &RunMeta) -> String {
+fn meta_block(m: &RunMeta, events: &[RunEvent]) -> String {
     let dur = m.finished_at.map(|f| (f - m.started_at).num_seconds().max(0)).unwrap_or(0);
     let cost = m.cost_usd.map(|c| format!(" · ${c:.2}")).unwrap_or_default();
     let tokens = if m.input_tokens + m.output_tokens > 0 {
@@ -350,7 +356,7 @@ fn meta_block(m: &RunMeta) -> String {
         String::new()
     };
     format!(
-        "<!--otto-meta--><div class=\"otto-meta\"><b>ottobot</b> · {skill} · <code>{id}</code> · {status} · agent <b>{agent}</b> · {mm}m{ss:02}s{tokens}{cost} · {started}</div>",
+        "<!--otto-meta--><div class=\"otto-meta\"><b>ottobot</b> · {skill} · <code>{id}</code> · {status} · agent <b>{agent}</b> · {mm}m{ss:02}s{tokens}{cost} · {started}</div>{details}",
         skill = html_escape(&m.skill),
         id = html_escape(&m.id),
         status = html_escape(&m.status_text()),
@@ -358,6 +364,39 @@ fn meta_block(m: &RunMeta) -> String {
         mm = dur / 60,
         ss = dur % 60,
         started = m.started_at.format("%Y-%m-%d %H:%M %:z"),
+        details = details_block(m, events, dur),
+    )
+}
+
+/// Failed runs only: command, exit, duration, stderr tail, last 5 events. Stderr and events are untrusted: escaped.
+fn details_block(m: &RunMeta, events: &[RunEvent], dur: i64) -> String {
+    if !matches!(m.status, crate::run::RunStatus::Failed(_)) {
+        return String::new();
+    }
+    let na = || "—".to_string();
+    let last: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            RunEvent::ToolUse { name, summary } => Some(format!("⚙ {name} {summary}")),
+            RunEvent::ToolResult { summary, is_error } => Some(format!("{} {summary}", if *is_error { "✗" } else { "←" })),
+            RunEvent::Text(t) | RunEvent::Raw(t) => Some(crate::runner::truncate(t, 200)),
+            RunEvent::Stderr(l) if !l.trim().is_empty() => {
+                Some(format!("stderr: {}", crate::runner::truncate(&crate::run::redact(l), 200)))
+            }
+            RunEvent::Done { ok, summary } => Some(format!("done ok={ok} {}", crate::runner::truncate(summary, 200))),
+            _ => None,
+        })
+        .collect();
+    let last: String = last[last.len().saturating_sub(5)..].iter().map(|l| format!("<li>{}</li>", html_escape(l))).collect();
+    let stderr = if m.stderr_tail.is_empty() { na() } else { html_escape(&m.stderr_tail.join("\n")) };
+    format!(
+        "<div class=\"otto-meta\"><b>Run details</b><br>command: <code>{cmd}</code><br>exit: {exit} · {mm}m{ss:02}s\
+         <br>stderr:<pre>{stderr}</pre>last events:<ul>{last}</ul></div>",
+        cmd = m.command.as_deref().map_or_else(na, html_escape),
+        exit = m.exit.as_deref().map_or_else(na, html_escape),
+        mm = dur / 60,
+        ss = dur % 60,
+        last = if last.is_empty() { "<li>none</li>".into() } else { last },
     )
 }
 
@@ -389,12 +428,12 @@ fn kfmt(n: u64) -> String {
 
 /// Agent-written HTML gets the same meta line appended once (before </body> when present),
 /// and the verdict banner right after the opening <body> tag.
-fn stamp_html(html: &Path, m: &RunMeta) -> std::io::Result<()> {
+fn stamp_html(html: &Path, m: &RunMeta, events: &[RunEvent]) -> std::io::Result<()> {
     let mut s = fs::read_to_string(html)?;
     if s.contains("<!--otto-meta-->") {
         return Ok(());
     }
-    let block = format!("<style>{META_CSS}{VERDICT_CSS}</style>{}", meta_block(m));
+    let block = format!("<style>{META_CSS}{VERDICT_CSS}</style>{}", meta_block(m, events));
     s = match s.rfind("</body>") {
         Some(i) => format!("{}{}{}", &s[..i], block, &s[i..]),
         None => format!("{s}{block}"),
@@ -523,6 +562,9 @@ mod tests {
             summary: None,
             report: None,
             verdict: None,
+            exit: None,
+            command: None,
+            stderr_tail: vec![],
             cost_usd: None,
             input_tokens: 0,
             output_tokens: 0,
@@ -575,6 +617,19 @@ mod tests {
     }
 
     #[test]
+    fn details_only_on_failure_and_escaped() {
+        let mut m = meta("r");
+        (m.command, m.exit, m.stderr_tail) = (Some("codex <prompt: 9 chars>".into()), Some("code 1".into()), vec!["<b>err</b>".into()]);
+        let ev: Vec<RunEvent> = (0..7).map(|i| RunEvent::ToolUse { name: "shell".into(), summary: format!("<i>{i}") }).collect();
+        assert!(!meta_block(&m, &ev).contains("Run details"));
+        m.status = crate::run::RunStatus::Failed("x".into());
+        let b = meta_block(&m, &ev);
+        assert!(b.contains("Run details") && b.contains("codex &lt;prompt: 9 chars&gt;") && b.contains("&lt;b&gt;err"), "{b}");
+        // Last 5 of 7 events, escaped.
+        assert!(!b.contains("<b>err") && !b.contains("<i>") && !b.contains("&lt;i&gt;1") && b.contains("&lt;i&gt;2"), "{b}");
+    }
+
+    #[test]
     fn index_escapes_and_lists_latest_per_skill() {
         let dir = std::env::temp_dir().join(format!("otto-index-test-{}", std::process::id()));
         fs::create_dir_all(dir.join("reports")).unwrap();
@@ -599,6 +654,25 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_rebuilds_stderr_tail() {
+        let dir = std::env::temp_dir().join(format!("otto-reconcile-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("reports")).unwrap();
+        fs::create_dir_all(dir.join("runs")).unwrap();
+        let store = Store { dir: dir.clone() };
+        let mut m = meta("crashed");
+        m.status = crate::run::RunStatus::Running;
+        m.command = Some("codex exec <prompt: 9 chars>".into());
+        store.save_run_meta(&m).unwrap();
+        store.append_event("crashed", &RunEvent::Stderr("Error: 401 Bearer abcdefgh12345678".into())).unwrap();
+        let back = store.load_metas().into_iter().find(|x| x.id == "crashed").unwrap();
+        assert_eq!(back.stderr_tail, vec!["Error: 401 Bearer <redacted>".to_string()]);
+        let page = fs::read_to_string(store.report_path("crashed")).unwrap();
+        assert!(page.contains("codex exec") && page.contains("Bearer &lt;redacted&gt;"), "{page}");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn finalize_reads_verdict_sidecar() {
         let dir = std::env::temp_dir().join(format!("otto-verdict-test-{}", std::process::id()));
         fs::create_dir_all(dir.join("reports")).unwrap();
@@ -606,13 +680,13 @@ mod tests {
         let mut m = meta("run1");
         fs::write(store.report_path("run1"), "<html><body><p>hi</p></body></html>").unwrap();
         fs::write(dir.join("reports/run1.verdict.json"), r#"{"level":"immediate","headline":"down","evidence":["0 rps"]}"#).unwrap();
-        store.finalize_report(&mut m);
+        store.finalize_report(&mut m, &[]);
         assert_eq!(m.verdict.as_ref().map(|v| v.level), Some(Level::Immediate));
         let page = fs::read_to_string(store.report_path("run1")).unwrap();
         assert!(page.starts_with("<html><body><div class=\"otto-verdict otto-immediate\">"), "{page}");
         // No sidecar → unassessed, md path renders no banner.
         let mut m2 = meta("run2");
-        store.finalize_report(&mut m2);
+        store.finalize_report(&mut m2, &[]);
         assert!(m2.verdict.is_none());
         assert!(!fs::read_to_string(store.report_path("run2")).unwrap().contains("class=\"otto-verdict"));
         let _ = fs::remove_dir_all(dir);
