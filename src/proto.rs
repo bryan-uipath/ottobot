@@ -149,7 +149,8 @@ impl AppState {
                 })
                 .collect(),
             skill_errors: self.skill_errors.clone(),
-            runs: self.runs.iter().map(|r| r.meta.clone()).collect(),
+            // Diagnostics stay in the run record and reports; the tray doesn't need ~6KB/run every poll.
+            runs: self.runs.iter().map(|r| RunMeta { stderr_tail: vec![], command: None, ..r.meta.clone() }).collect(),
             log: self.log.clone(),
             last_tick: self.last_tick,
             next_tick: self.next_tick,

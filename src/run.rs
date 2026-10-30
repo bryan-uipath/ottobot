@@ -148,6 +148,41 @@ pub fn one_liner(msg: &str) -> Option<String> {
 }
 
 /// "## **Done** `x` [PR](u)" → "Done x PR".
+pub const STDERR_TAIL: usize = 20;
+
+/// Keep the last `STDERR_TAIL` stderr lines, redacted, each ≤300 chars (incl. "…").
+pub fn push_tail(tail: &mut Vec<String>, line: &str) {
+    tail.push(crate::runner::truncate(&redact(line), 299));
+    if tail.len() > STDERR_TAIL {
+        tail.remove(0);
+    }
+}
+
+/// Mask credential-looking words before stderr reaches metas, reports and the socket:
+/// known token prefixes, the word after `Bearer`/`token`, and `key=`/`secret=`/`password=`/`token=` values.
+pub fn redact(line: &str) -> String {
+    const PREFIXES: [&str; 9] = ["sk-", "ghp_", "gho_", "ghs_", "ghu_", "github_pat_", "xox", "AKIA", "eyJ"];
+    const KEYS: [&str; 5] = ["key=", "secret=", "password=", "token=", "authorization="];
+    let mut after_marker = false;
+    let words: Vec<String> = line
+        .split(' ')
+        .map(|w| {
+            let lw = w.to_ascii_lowercase();
+            let token_like = PREFIXES.iter().any(|p| w.trim_matches(|c: char| !c.is_alphanumeric()).starts_with(p)) && w.len() >= 16;
+            let masked = if (after_marker && w.len() >= 8) || token_like {
+                "<redacted>".to_string()
+            } else if let Some(i) = KEYS.iter().find_map(|k| lw.find(k).map(|i| i + k.len())) {
+                format!("{}<redacted>", &w[..i])
+            } else {
+                w.to_string()
+            };
+            after_marker = matches!(lw.trim_end_matches(':'), "bearer" | "token" | "authorization");
+            masked
+        })
+        .collect();
+    words.join(" ")
+}
+
 /// Up to the first `.`/`!`/`?` followed by whitespace, or the first line.
 fn first_sentence(s: &str) -> &str {
     let s = s.trim().lines().next().unwrap_or_default();
@@ -194,6 +229,14 @@ impl Run {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redact_masks_credentials() {
+        assert_eq!(redact("Authorization: Bearer abcdefgh12345678"), "Authorization: Bearer <redacted>");
+        assert_eq!(redact("use sk-proj-0123456789abcdef now"), "use <redacted> now");
+        assert_eq!(redact("url?token=abc123&x=1 failed"), "url?token=<redacted> failed");
+        assert_eq!(redact("error: 401 Unauthorized"), "error: 401 Unauthorized");
+    }
 
     #[test]
     fn one_liner_cleans_markdown_and_skips_boilerplate() {

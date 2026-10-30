@@ -157,6 +157,14 @@ impl Store {
                     meta.status = crate::run::RunStatus::Failed("interrupted (ottobot exited)".into());
                     meta.finished_at = meta.finished_at.or(Some(Local::now()));
                     let events = self.load_events(&meta.id);
+                    // Only the spawn-time meta reached disk; rebuild the stderr tail from the event log.
+                    for e in &events {
+                        if let RunEvent::Stderr(l) = e {
+                            if !l.trim().is_empty() {
+                                crate::run::push_tail(&mut meta.stderr_tail, l);
+                            }
+                        }
+                    }
                     self.finalize_report(&mut meta, &events);
                     let _ = self.save_run_meta(&meta);
                 }
@@ -372,6 +380,10 @@ fn details_block(m: &RunMeta, events: &[RunEvent], dur: i64) -> String {
             RunEvent::ToolUse { name, summary } => Some(format!("⚙ {name} {summary}")),
             RunEvent::ToolResult { summary, is_error } => Some(format!("{} {summary}", if *is_error { "✗" } else { "←" })),
             RunEvent::Text(t) | RunEvent::Raw(t) => Some(crate::runner::truncate(t, 200)),
+            RunEvent::Stderr(l) if !l.trim().is_empty() => {
+                Some(format!("stderr: {}", crate::runner::truncate(&crate::run::redact(l), 200)))
+            }
+            RunEvent::Done { ok, summary } => Some(format!("done ok={ok} {}", crate::runner::truncate(summary, 200))),
             _ => None,
         })
         .collect();
@@ -638,6 +650,25 @@ mod tests {
         let (latest, all) = page.split_once("All reports").unwrap();
         assert!(latest.contains("href=\"new.html\"") && latest.contains("data-skill=\"t&quot;&lt;b&gt;\"") && !latest.contains("old.html"));
         assert!(all.contains("old.html") && all.contains("new.html") && !page.contains("gone.html"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reconcile_rebuilds_stderr_tail() {
+        let dir = std::env::temp_dir().join(format!("otto-reconcile-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("reports")).unwrap();
+        fs::create_dir_all(dir.join("runs")).unwrap();
+        let store = Store { dir: dir.clone() };
+        let mut m = meta("crashed");
+        m.status = crate::run::RunStatus::Running;
+        m.command = Some("codex exec <prompt: 9 chars>".into());
+        store.save_run_meta(&m).unwrap();
+        store.append_event("crashed", &RunEvent::Stderr("Error: 401 Bearer abcdefgh12345678".into())).unwrap();
+        let back = store.load_metas().into_iter().find(|x| x.id == "crashed").unwrap();
+        assert_eq!(back.stderr_tail, vec!["Error: 401 Bearer <redacted>".to_string()]);
+        let page = fs::read_to_string(store.report_path("crashed")).unwrap();
+        assert!(page.contains("codex exec") && page.contains("Bearer &lt;redacted&gt;"), "{page}");
         let _ = fs::remove_dir_all(dir);
     }
 

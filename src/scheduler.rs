@@ -441,6 +441,8 @@ async fn execute(
     inv.apply_env(&mut cmd);
     if let Some(r) = shared.lock().unwrap().run_mut(id) {
         r.meta.command = Some(command_line(cmd.as_std(), &inv.prompt));
+        // On disk now, so a crash-reconciled report still shows it.
+        let _ = store.save_run_meta(&r.meta);
     }
     let (name, started) = (runner.name(), std::time::Instant::now());
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
@@ -490,7 +492,7 @@ async fn execute(
                         }
                         RunEvent::Stderr(l) if !l.trim().is_empty() => {
                             if let Some(r) = sh.run_mut(id) {
-                                push_tail(&mut r.meta.stderr_tail, l);
+                                crate::run::push_tail(&mut r.meta.stderr_tail, l);
                             }
                         }
                         _ => {}
@@ -501,6 +503,9 @@ async fn execute(
             },
             _ = &mut deadline => {
                 let _ = child.kill().await;
+                if let (Ok(st), Some(r)) = (child.wait().await, shared.lock().unwrap().run_mut(id)) {
+                    r.meta.exit = Some(exit_text(st));
+                }
                 anyhow::bail!("timed out after {}", humantime::format_duration(timeout));
             }
         }
@@ -513,16 +518,6 @@ async fn execute(
         r.meta.exit = Some(exit_text(status));
     }
     Ok(failure(name, done.as_ref().map(|(ok, s)| (*ok, s.as_str())), status, tail.as_deref(), started.elapsed()))
-}
-
-const STDERR_TAIL: usize = 20;
-
-/// Keep the last `STDERR_TAIL` lines, each ≤300 chars.
-fn push_tail(tail: &mut Vec<String>, line: &str) {
-    tail.push(runner::truncate(line, 300));
-    if tail.len() > STDERR_TAIL {
-        tail.remove(0);
-    }
 }
 
 /// `codex exec --json … <prompt: 812 chars>`: the prompt is replaced, env is never included.
@@ -625,10 +620,10 @@ mod tests {
     fn stderr_tail_is_bounded() {
         let mut tail = vec![];
         for i in 0..25 {
-            push_tail(&mut tail, &format!("{i} {}", "x".repeat(400)));
+            crate::run::push_tail(&mut tail, &format!("{i} {}", "x".repeat(400)));
         }
-        assert_eq!(tail.len(), STDERR_TAIL);
+        assert_eq!(tail.len(), crate::run::STDERR_TAIL);
         assert!(tail[0].starts_with("5 ") && tail[19].starts_with("24 "));
-        assert!(tail.iter().all(|l| l.chars().count() == 301)); // 300 + ellipsis
+        assert!(tail.iter().all(|l| l.chars().count() == 300)); // 299 + ellipsis
     }
 }
