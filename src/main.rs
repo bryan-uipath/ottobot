@@ -5,6 +5,7 @@ mod checker;
 mod client;
 mod config;
 mod daemon;
+mod history;
 mod ledger;
 mod otto;
 mod power;
@@ -451,6 +452,8 @@ async fn check_once(root: &std::path::Path, store: &store::Store, runner: &str, 
     for e in std::fs::read_dir(&live)?.flatten() {
         let _ = std::fs::copy(e.path(), memory.join(e.file_name()));
     }
+    // No shared state here: rebuild from disk, without reconciling runs a live daemon may own.
+    crate::history::write(&memory, &crate::history::entries(&store.read_metas(false), &skill.name))?;
     let c = checker::Checker::new(skill, description, watch, store, root, runner).with_memory(memory.clone());
     let out = c.check(0).await;
     let _ = std::fs::remove_dir_all(&memory);
