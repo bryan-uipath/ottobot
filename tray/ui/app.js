@@ -51,14 +51,17 @@ const firstLine = (s) => (s || '').split('\n')[0];
 const basename = (p) => p.split('/').filter(Boolean).pop() || p;
 const row = (glyph, name, rest, ...extra) => el('div', 'row', null, glyph, el('span', 'name', name), el('span', 'rest', rest), ...extra);
 const none = () => el('div', 'none', 'none');
+// Click or Enter runs `go`.
+const activatable = (node, title, go) => {
+  node.title = title;
+  node.tabIndex = 0;
+  node.onclick = go;
+  node.onkeydown = (e) => { if (e.key === 'Enter') go(); };
+};
 // Whole element opens the report (keyboard too).
 const clickable = (node, report) => {
   node.classList.add('link');
-  node.title = 'open report';
-  node.tabIndex = 0;
-  const go = () => invoke('open_report', { path: report });
-  node.onclick = go;
-  node.onkeydown = (e) => { if (e.key === 'Enter') go(); };
+  activatable(node, 'open report', () => invoke('open_report', { path: report }));
 };
 
 function render(st, tray) {
@@ -89,14 +92,11 @@ function render(st, tray) {
     btn.title = 'dismiss';
     btn.onclick = () => invoke('dismiss', { skill: a.skill, key: a.key }).then(refresh, refresh);
     out.push(row(el('span', `lvl ${a.level}`, '●'), a.skill, `${short(now - Date.parse(a.first_seen))} ago`, ...extra, btn));
-    // Headline only (2 lines); click toggles the summary.
+    // Headline clamped to 2 lines; click/Enter unclamps it and shows the summary.
     const id = `${a.skill}|${a.key}`, open = expanded.has(id);
-    const body = el('div', open ? 'alert open' : 'alert', null, el('div', 'hl', a.headline));
-    if (a.summary) {
-      body.append(el('span', 'caret', open ? '▾' : '▸'), el('div', 'sm', a.summary));
-      body.title = open ? 'hide details' : 'show details';
-      body.onclick = () => { open ? expanded.delete(id) : expanded.add(id); refresh(); };
-    }
+    const body = el('div', open ? 'alert open' : 'alert', null, el('div', 'hl', a.headline), el('span', 'caret', open ? '▾' : '▸'));
+    if (a.summary) body.append(el('div', 'sm', a.summary));
+    activatable(body, open ? 'hide details' : 'show details', () => { expanded.has(id) ? expanded.delete(id) : expanded.add(id); refresh(); });
     out.push(body);
   }
 

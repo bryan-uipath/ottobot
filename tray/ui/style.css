@@ -99,12 +99,11 @@ body::after { top: 10px; border-bottom-color: var(--bg-1); }
 .lvl.critical { color: var(--warn); }
 .lvl.immediate { color: var(--err); }
 /* Headline clamped to 2 lines; summary shown only when open. Indented under the skill name. */
-.alert { display: grid; grid-template-columns: 1fr auto; column-gap: 6px; margin: -2px 0 6px 18px; font-size: 12px; }
-.alert[title] { cursor: pointer; }
+.alert { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 6px; margin: -2px 0 6px 18px; font-size: 12px; cursor: pointer; }
 .alert .hl { color: var(--fg); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .alert.open .hl { display: block; }
 .alert .caret { color: var(--fg-light); align-self: end; }
-.alert .sm { grid-column: 1 / -1; color: var(--fg-de); display: none; }
+.alert .sm { grid-column: 1 / -1; color: var(--fg-de); display: none; overflow-wrap: anywhere; }
 .alert.open .sm { display: block; margin-top: 2px; }
 .link { cursor: pointer; border-radius: 6px; }
 .link:hover { background: var(--bg-hover); }
