@@ -98,10 +98,13 @@ body::after { top: 10px; border-bottom-color: var(--bg-1); }
 .lvl { flex: none; width: 10px; text-align: center; }
 .lvl.critical { color: var(--warn); }
 .lvl.immediate { color: var(--err); }
-/* Headline + summary wrap (1–4 sentences); indented under the skill name. */
-.alert { margin: -2px 0 6px 18px; font-size: 12px; }
-.alert .hl { color: var(--fg); }
-.alert .sm { color: var(--fg-de); }
+/* Headline clamped to 2 lines; summary shown only when open. Indented under the skill name. */
+.alert { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 6px; margin: -2px 0 6px 18px; font-size: 12px; cursor: pointer; }
+.alert .hl { color: var(--fg); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.alert.open .hl { display: block; }
+.alert .caret { color: var(--fg-light); align-self: end; }
+.alert .sm { grid-column: 1 / -1; color: var(--fg-de); display: none; overflow-wrap: anywhere; }
+.alert.open .sm { display: block; margin-top: 2px; }
 .link { cursor: pointer; border-radius: 6px; }
 .link:hover { background: var(--bg-hover); }
 .sub.link { margin-left: 14px; padding-left: 6px; }
@@ -119,6 +122,7 @@ button:hover { color: var(--fg); background: var(--bg-3); border-color: var(--bo
 button:disabled { opacity: .4; cursor: default; }
 .sub { margin: -2px 0 4px 20px; color: var(--fg-light); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row button { flex: none; padding: 0 8px; font-size: 12px; }
+.row button.icon { padding: 0 6px; }
 .foot { display: flex; justify-content: space-between; padding: 10px 16px; border-top: 1px solid var(--border); }
 
 .down { padding: 28px 0; text-align: center; }
