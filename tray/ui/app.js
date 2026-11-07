@@ -129,7 +129,8 @@ function render(st, tray) {
       el('span', 'rest split', null, el('span', 'why', why), tail ? el('span', null, tail) : ''));
     if (report) clickable(r, report);
     if (run) {
-      const btn = el('button', null, 'dismiss');
+      const btn = el('button', 'icon', '✕');
+      btn.title = 'dismiss';
       // Row opens the report; the button must not.
       btn.onclick = (e) => { e.stopPropagation(); invoke('dismiss_failure', { run }).then(refresh, refresh); };
       btn.onkeydown = (e) => e.stopPropagation();
